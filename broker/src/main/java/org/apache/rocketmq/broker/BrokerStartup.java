@@ -64,6 +64,7 @@ public class BrokerStartup {
     public static BrokerController start(BrokerController controller) {
         try {
 
+            // step3 启动BrokerController
             controller.start();
 
             String tip = "The broker[" + controller.getBrokerConfig().getBrokerName() + ", "
@@ -216,6 +217,7 @@ public class BrokerStartup {
 
             brokerConfig.setInBrokerContainer(false);
 
+            // step1 构造BrokerController
             final BrokerController controller = new BrokerController(
                 brokerConfig,
                 nettyServerConfig,
@@ -224,6 +226,7 @@ public class BrokerStartup {
             // remember all configs to prevent discard
             controller.getConfiguration().registerConfig(properties);
 
+            // step2 初始化BrokerController
             boolean initResult = controller.initialize();
             if (!initResult) {
                 controller.shutdown();

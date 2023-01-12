@@ -16,30 +16,13 @@
  */
 package org.apache.rocketmq.broker.topic;
 
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.Map;
-import java.util.Map.Entry;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.locks.Lock;
-import java.util.concurrent.locks.ReentrantLock;
-
 import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableMap;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.rocketmq.broker.BrokerController;
 import org.apache.rocketmq.broker.BrokerPathConfigHelper;
-import org.apache.rocketmq.common.PopAckConstants;
+import org.apache.rocketmq.common.*;
 import org.apache.rocketmq.common.attribute.Attribute;
-import org.apache.rocketmq.common.ConfigManager;
-import org.apache.rocketmq.common.DataVersion;
-import org.apache.rocketmq.common.MixAll;
-import org.apache.rocketmq.common.TopicAttributes;
-import org.apache.rocketmq.common.TopicConfig;
 import org.apache.rocketmq.common.constant.LoggerName;
 import org.apache.rocketmq.common.constant.PermName;
 import org.apache.rocketmq.common.protocol.body.KVTable;
@@ -48,6 +31,14 @@ import org.apache.rocketmq.common.sysflag.TopicSysFlag;
 import org.apache.rocketmq.common.topic.TopicValidator;
 import org.apache.rocketmq.logging.InternalLogger;
 import org.apache.rocketmq.logging.InternalLoggerFactory;
+
+import java.util.*;
+import java.util.Map.Entry;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 
 import static com.google.common.base.Preconditions.checkNotNull;
 
@@ -58,8 +49,10 @@ public class TopicConfigManager extends ConfigManager {
 
     private transient final Lock topicConfigTableLock = new ReentrantLock();
 
+    // topic - topic配置
     private final ConcurrentMap<String, TopicConfig> topicConfigTable =
         new ConcurrentHashMap<String, TopicConfig>(1024);
+    // 配置版本
     private final DataVersion dataVersion = new DataVersion();
     private transient BrokerController brokerController;
 
@@ -78,7 +71,7 @@ public class TopicConfigManager extends ConfigManager {
         }
         {
             if (this.brokerController.getBrokerConfig().isAutoCreateTopicEnable()) {
-                String topic = TopicValidator.AUTO_CREATE_TOPIC_KEY_TOPIC;
+                String topic = TopicValidator.AUTO_CREATE_TOPIC_KEY_TOPIC; // TBW102
                 TopicConfig topicConfig = new TopicConfig(topic);
                 TopicValidator.addSystemTopic(topic);
                 topicConfig.setReadQueueNums(this.brokerController.getBrokerConfig()
@@ -90,6 +83,7 @@ public class TopicConfigManager extends ConfigManager {
                 this.topicConfigTable.put(topicConfig.getTopicName(), topicConfig);
             }
         }
+        // 其他系统内置topic
         {
             String topic = TopicValidator.RMQ_SYS_BENCHMARK_TOPIC;
             TopicConfig topicConfig = new TopicConfig(topic);
@@ -474,6 +468,7 @@ public class TopicConfigManager extends ConfigManager {
 
         topicConfig.setAttributes(finalAttributes);
 
+        // step1 内存
         TopicConfig old = this.topicConfigTable.put(topicConfig.getTopicName(), topicConfig);
         if (old != null) {
             log.info("update topic config, old:[{}] new:[{}]", old, topicConfig);
@@ -484,6 +479,7 @@ public class TopicConfigManager extends ConfigManager {
         long stateMachineVersion = brokerController.getMessageStore() != null ? brokerController.getMessageStore().getStateMachineVersion() : 0;
         dataVersion.nextVersion(stateMachineVersion);
 
+        // step2 topic配置全量写topics.json
         this.persist(topicConfig.getTopicName(), topicConfig);
     }
 
@@ -572,6 +568,7 @@ public class TopicConfigManager extends ConfigManager {
 
     @Override
     public String configFilePath() {
+        // {user.home}/store/config/topics.json
         return BrokerPathConfigHelper.getTopicConfigPath(this.brokerController.getMessageStoreConfig().getStorePathRootDir());
     }
 

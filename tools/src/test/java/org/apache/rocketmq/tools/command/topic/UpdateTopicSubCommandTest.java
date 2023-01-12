@@ -20,13 +20,14 @@ import org.apache.commons.cli.CommandLine;
 import org.apache.commons.cli.Options;
 import org.apache.commons.cli.PosixParser;
 import org.apache.rocketmq.srvutil.ServerUtil;
+import org.apache.rocketmq.tools.command.SubCommandException;
 import org.junit.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 public class UpdateTopicSubCommandTest {
     @Test
-    public void testExecute() {
+    public void testExecute() throws SubCommandException {
         UpdateTopicSubCommand cmd = new UpdateTopicSubCommand();
         Options options = ServerUtil.buildCommandlineOptions(new Options());
         String[] subargs = new String[] {
@@ -48,5 +49,6 @@ public class UpdateTopicSubCommandTest {
         assertThat(commandLine.getOptionValue('o').trim()).isEqualTo("false");
         assertThat(commandLine.getOptionValue('u').trim()).isEqualTo("false");
         assertThat(commandLine.getOptionValue('s').trim()).isEqualTo("false");
+        cmd.execute(commandLine, options, null);
     }
 }
