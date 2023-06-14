@@ -62,24 +62,24 @@
     <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
         <append>true</append>
         <encoder>
-            <pattern>%d{yyy-MM-dd HH\:mm\:ss,SSS} %p %t - %m%n</pattern>
+            <pattern>%d{yyy-MM-dd HH:mm:ss,SSS} %p %t - %m%n</pattern>
             <charset class="java.nio.charset.Charset">UTF-8</charset>
         </encoder>
     </appender>
 
     <logger name="RocketmqNamesrv" additivity="false">
         <level value="INFO"/>
-        <appender-ref ref="RocketmqNamesrvAppender"/>
+        <appender-ref ref="STDOUT"/>
     </logger>
 
     <logger name="RocketmqCommon" additivity="false">
         <level value="INFO"/>
-        <appender-ref ref="RocketmqNamesrvAppender"/>
+        <appender-ref ref="STDOUT"/>
     </logger>
 
     <logger name="RocketmqRemoting" additivity="false">
         <level value="INFO"/>
-        <appender-ref ref="RocketmqNamesrvAppender"/>
+        <appender-ref ref="STDOUT"/>
     </logger>
 
     <logger name="RocketmqNamesrvConsole" additivity="false">
@@ -89,6 +89,6 @@
 
     <root>
         <level value="INFO"/>
-        <appender-ref ref="DefaultAppender"/>
+        <appender-ref ref="STDOUT"/>
     </root>
 </configuration>

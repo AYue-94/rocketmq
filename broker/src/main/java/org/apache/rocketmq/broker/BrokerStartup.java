@@ -55,6 +55,11 @@ public class BrokerStartup {
     public static InternalLogger log;
 
     public static void main(String[] args) {
+        System.setProperty(MixAll.ROCKETMQ_HOME_PROPERTY, "/Users/yuyue/projects/JavaProject/source/rocketmq-4.6.0/distribution");
+        if (args.length == 0) {
+            // 单机
+            args = new String[]{"-c", "/Users/yuyue/projects/JavaProject/source/rocketmq-4.6.0/distribution/conf/broker.conf"};
+        }
         start(createBrokerController(args));
     }
 
