@@ -25,11 +25,11 @@ import java.util.Map;
 public class Message implements Serializable {
     private static final long serialVersionUID = 8445773977080406428L;
 
-    private String topic;
-    private int flag;
-    private Map<String, String> properties;
-    private byte[] body;
-    private String transactionId;
+    private String topic; // 发送topic
+    private int flag; // 0 暂时没看到有啥用
+    private Map<String, String> properties; // 扩展map
+    private byte[] body; // 消息体
+    private String transactionId; // 事务消息 事务id
 
     public Message() {
     }
@@ -130,7 +130,7 @@ public class Message implements Serializable {
         StringBuffer sb = new StringBuffer();
         for (String k : keys) {
             sb.append(k);
-            sb.append(MessageConst.KEY_SEPARATOR);
+            sb.append(MessageConst.KEY_SEPARATOR); // 空格
         }
 
         this.setKeys(sb.toString().trim());

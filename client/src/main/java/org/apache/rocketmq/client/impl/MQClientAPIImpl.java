@@ -16,17 +16,6 @@
  */
 package org.apache.rocketmq.client.impl;
 
-import java.io.UnsupportedEncodingException;
-import java.nio.ByteBuffer;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.Properties;
-import java.util.Set;
-import java.util.concurrent.atomic.AtomicInteger;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.rocketmq.client.ClientConfig;
 import org.apache.rocketmq.client.consumer.PullCallback;
@@ -43,12 +32,12 @@ import org.apache.rocketmq.client.log.ClientLogger;
 import org.apache.rocketmq.client.producer.SendCallback;
 import org.apache.rocketmq.client.producer.SendResult;
 import org.apache.rocketmq.client.producer.SendStatus;
+import org.apache.rocketmq.common.AclConfig;
 import org.apache.rocketmq.common.DataVersion;
 import org.apache.rocketmq.common.MQVersion;
 import org.apache.rocketmq.common.MixAll;
 import org.apache.rocketmq.common.PlainAccessConfig;
 import org.apache.rocketmq.common.TopicConfig;
-import org.apache.rocketmq.common.AclConfig;
 import org.apache.rocketmq.common.UtilAll;
 import org.apache.rocketmq.common.admin.ConsumeStats;
 import org.apache.rocketmq.common.admin.TopicStatsTable;
@@ -163,6 +152,18 @@ import org.apache.rocketmq.remoting.netty.ResponseFuture;
 import org.apache.rocketmq.remoting.protocol.LanguageCode;
 import org.apache.rocketmq.remoting.protocol.RemotingCommand;
 import org.apache.rocketmq.remoting.protocol.RemotingSerializable;
+
+import java.io.UnsupportedEncodingException;
+import java.nio.ByteBuffer;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Properties;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class MQClientAPIImpl {
 
@@ -458,12 +459,15 @@ public class MQClientAPIImpl {
             }
         } else {
             if (sendSmartMsg || msg instanceof MessageBatch) {
+                // 把原来的header转SendMessageRequestHeaderV2，缩短了属性名，加速序列化
                 SendMessageRequestHeaderV2 requestHeaderV2 = SendMessageRequestHeaderV2.createSendMessageRequestHeaderV2(requestHeader);
-                request = RemotingCommand.createRequestCommand(msg instanceof MessageBatch ? RequestCode.SEND_BATCH_MESSAGE : RequestCode.SEND_MESSAGE_V2, requestHeaderV2);
+                request = RemotingCommand.createRequestCommand(msg instanceof MessageBatch ?
+                        RequestCode.SEND_BATCH_MESSAGE : RequestCode.SEND_MESSAGE_V2, requestHeaderV2);
             } else {
                 request = RemotingCommand.createRequestCommand(RequestCode.SEND_MESSAGE, requestHeader);
             }
         }
+        // Message的body作为最后通讯层报文的body
         request.setBody(msg.getBody());
 
         switch (communicationMode) {
@@ -686,7 +690,7 @@ public class MQClientAPIImpl {
                     uniqMsgId = sb.toString();
                 }
                 SendResult sendResult = new SendResult(sendStatus,
-                    uniqMsgId,
+                    uniqMsgId, // 发送端设置的msgId
                     responseHeader.getMsgId(), messageQueue, responseHeader.getQueueOffset());
                 sendResult.setTransactionId(responseHeader.getTransactionId());
                 String regionId = response.getExtFields().get(MessageConst.PROPERTY_MSG_REGION);

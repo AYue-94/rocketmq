@@ -16,10 +16,6 @@
  */
 package org.apache.rocketmq.broker.processor;
 
-import java.net.SocketAddress;
-import java.util.List;
-import java.util.Map;
-
 import io.netty.channel.ChannelHandlerContext;
 import org.apache.rocketmq.broker.BrokerController;
 import org.apache.rocketmq.broker.mqtrace.ConsumeMessageContext;
@@ -53,6 +49,10 @@ import org.apache.rocketmq.store.MessageExtBrokerInner;
 import org.apache.rocketmq.store.PutMessageResult;
 import org.apache.rocketmq.store.config.StorePathConfigHelper;
 import org.apache.rocketmq.store.stats.BrokerStatsManager;
+
+import java.net.SocketAddress;
+import java.util.List;
+import java.util.Map;
 
 public class SendMessageProcessor extends AbstractSendMessageProcessor implements NettyRequestProcessor {
 
@@ -318,6 +318,8 @@ public class SendMessageProcessor extends AbstractSendMessageProcessor implement
         }
 
         response.setCode(-1);
+
+        // TopicConfigManager自动创建topic TopicConfig
         super.msgCheck(ctx, requestHeader, response);
         if (response.getCode() != -1) {
             return response;
@@ -332,10 +334,12 @@ public class SendMessageProcessor extends AbstractSendMessageProcessor implement
             queueIdInt = Math.abs(this.random.nextInt() % 99999999) % topicConfig.getWriteQueueNums();
         }
 
+        // 模型转MessageExtBrokerInner
         MessageExtBrokerInner msgInner = new MessageExtBrokerInner();
         msgInner.setTopic(requestHeader.getTopic());
         msgInner.setQueueId(queueIdInt);
 
+        // consumer重试相关
         if (!handleRetryAndDLQ(requestHeader, response, request, msgInner, topicConfig)) {
             return response;
         }
@@ -352,7 +356,7 @@ public class SendMessageProcessor extends AbstractSendMessageProcessor implement
         msgInner.setPropertiesString(MessageDecoder.messageProperties2String(msgInner.getProperties()));
         PutMessageResult putMessageResult = null;
         Map<String, String> oriProps = MessageDecoder.string2messageProperties(requestHeader.getProperties());
-        String traFlag = oriProps.get(MessageConst.PROPERTY_TRANSACTION_PREPARED);
+        String traFlag = oriProps.get(MessageConst.PROPERTY_TRANSACTION_PREPARED); // 事务消息
         if (traFlag != null && Boolean.parseBoolean(traFlag)) {
             if (this.brokerController.getBrokerConfig().isRejectTransactionMessage()) {
                 response.setCode(ResponseCode.NO_PERMISSION);
@@ -363,9 +367,11 @@ public class SendMessageProcessor extends AbstractSendMessageProcessor implement
             }
             putMessageResult = this.brokerController.getTransactionalMessageService().prepareMessage(msgInner);
         } else {
+            // 底层
             putMessageResult = this.brokerController.getMessageStore().putMessage(msgInner);
         }
 
+        // 处理响应
         return handlePutMessageResult(putMessageResult, response, request, msgInner, responseHeader, sendMessageContext, ctx, queueIdInt);
 
     }
@@ -444,6 +450,7 @@ public class SendMessageProcessor extends AbstractSendMessageProcessor implement
             responseHeader.setQueueId(queueIdInt);
             responseHeader.setQueueOffset(putMessageResult.getAppendMessageResult().getLogicsOffset());
 
+            // 响应客户端
             doResponse(ctx, request, response);
 
             if (hasSendMessageHook()) {

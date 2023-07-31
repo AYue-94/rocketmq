@@ -16,14 +16,15 @@
  */
 package org.apache.rocketmq.store;
 
-import java.io.File;
-import java.nio.ByteBuffer;
-import java.util.List;
 import org.apache.rocketmq.common.constant.LoggerName;
 import org.apache.rocketmq.logging.InternalLogger;
 import org.apache.rocketmq.logging.InternalLoggerFactory;
 import org.apache.rocketmq.store.config.BrokerRole;
 import org.apache.rocketmq.store.config.StorePathConfigHelper;
+
+import java.io.File;
+import java.nio.ByteBuffer;
+import java.util.List;
 
 public class ConsumeQueue {
     private static final InternalLogger log = InternalLoggerFactory.getLogger(LoggerName.STORE_LOGGER_NAME);
@@ -47,8 +48,8 @@ public class ConsumeQueue {
     public ConsumeQueue(
         final String topic,
         final int queueId,
-        final String storePath,
-        final int mappedFileSize,
+        final String storePath, // ...consumequeue
+        final int mappedFileSize, // MappedFile大小 默认30w条消息，每条20byte，总共600wbyte
         final DefaultMessageStore defaultMessageStore) {
         this.storePath = storePath;
         this.mappedFileSize = mappedFileSize;
@@ -57,13 +58,14 @@ public class ConsumeQueue {
         this.topic = topic;
         this.queueId = queueId;
 
+        // ConsumeQueue存储路径，consumequeue/{topic}/{queueId}
         String queueDir = this.storePath
             + File.separator + topic
             + File.separator + queueId;
 
         this.mappedFileQueue = new MappedFileQueue(queueDir, mappedFileSize, null);
 
-        this.byteBufferIndex = ByteBuffer.allocate(CQ_STORE_UNIT_SIZE);
+        this.byteBufferIndex = ByteBuffer.allocate(CQ_STORE_UNIT_SIZE); // 20
 
         if (defaultMessageStore.getMessageStoreConfig().isEnableConsumeQueueExt()) {
             this.consumeQueueExt = new ConsumeQueueExt(
@@ -402,6 +404,8 @@ public class ConsumeQueue {
                     this.defaultMessageStore.getMessageStoreConfig().isEnableDLegerCommitLog()) {
                     this.defaultMessageStore.getStoreCheckpoint().setPhysicMsgTimestamp(request.getStoreTimestamp());
                 }
+
+                // checkpoint 更新StoreCheckpoint的逻辑消息时间
                 this.defaultMessageStore.getStoreCheckpoint().setLogicsMsgTimestamp(request.getStoreTimestamp());
                 return;
             } else {
@@ -422,22 +426,26 @@ public class ConsumeQueue {
         this.defaultMessageStore.getRunningFlags().makeLogicsQueueError();
     }
 
-    private boolean putMessagePositionInfo(final long offset, final int size, final long tagsCode,
-        final long cqOffset) {
-
+    private boolean putMessagePositionInfo(final long offset, /*物理offset*/
+                                           final int size, /*消息长度*/
+                                           final long tagsCode, /*tag的hashCode*/
+                                           final long cqOffset /*逻辑offset，broker-topic-queue纬度从0自增*/) {
+        // 入参物理offset落后目前已经构建ConsumeQueue的物理offset，忽略
         if (offset + size <= this.maxPhysicOffset) {
             log.warn("Maybe try to build consume queue repeatedly maxPhysicOffset={} phyOffset={}", maxPhysicOffset, offset);
             return true;
         }
 
+        // 中间buffer
         this.byteBufferIndex.flip();
-        this.byteBufferIndex.limit(CQ_STORE_UNIT_SIZE);
-        this.byteBufferIndex.putLong(offset);
-        this.byteBufferIndex.putInt(size);
-        this.byteBufferIndex.putLong(tagsCode);
+        this.byteBufferIndex.limit(CQ_STORE_UNIT_SIZE); // 20
+        this.byteBufferIndex.putLong(offset); // 8 物理offset
+        this.byteBufferIndex.putInt(size); // 4 消息长度
+        this.byteBufferIndex.putLong(tagsCode); // 8 tag.hashCode
 
-        final long expectLogicOffset = cqOffset * CQ_STORE_UNIT_SIZE;
+        final long expectLogicOffset = cqOffset * CQ_STORE_UNIT_SIZE; // 逻辑offset * 20
 
+        // 找最后一个MappedFile
         MappedFile mappedFile = this.mappedFileQueue.getLastMappedFile(expectLogicOffset);
         if (mappedFile != null) {
 
@@ -470,7 +478,9 @@ public class ConsumeQueue {
                     );
                 }
             }
+            // 更新已经处理的物理offset
             this.maxPhysicOffset = offset + size;
+            // 写入fileChannel，还在pagecache，未flush
             return mappedFile.appendMessage(this.byteBufferIndex.array());
         }
         return false;

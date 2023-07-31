@@ -16,31 +16,36 @@
  */
 package org.apache.rocketmq.store.index;
 
+import org.apache.rocketmq.common.constant.LoggerName;
+import org.apache.rocketmq.logging.InternalLogger;
+import org.apache.rocketmq.logging.InternalLoggerFactory;
+import org.apache.rocketmq.store.MappedFile;
+
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.MappedByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
 import java.util.List;
-import org.apache.rocketmq.common.constant.LoggerName;
-import org.apache.rocketmq.logging.InternalLogger;
-import org.apache.rocketmq.logging.InternalLoggerFactory;
-import org.apache.rocketmq.store.MappedFile;
 
 public class IndexFile {
     private static final InternalLogger log = InternalLoggerFactory.getLogger(LoggerName.STORE_LOGGER_NAME);
     private static int hashSlotSize = 4;
     private static int indexSize = 20;
     private static int invalidIndex = 0;
-    private final int hashSlotNum;
-    private final int indexNum;
+    private final int hashSlotNum; // 500w slot
+    private final int indexNum; // 能存储索引的数量 2kw
+    // 一个索引文件
     private final MappedFile mappedFile;
+    // 索引文件对应fileChannel
     private final FileChannel fileChannel;
+    // 索引文件对应MappedByteBuffer
     private final MappedByteBuffer mappedByteBuffer;
+    // 40byte的索引文件头
     private final IndexHeader indexHeader;
-
     public IndexFile(final String fileName, final int hashSlotNum, final int indexNum,
         final long endPhyOffset, final long endTimestamp) throws IOException {
+        // 40字节头 + (500w*4)字节hashslot + (2kw*20)字节index
         int fileTotalSize =
             IndexHeader.INDEX_HEADER_SIZE + (hashSlotNum * hashSlotSize) + (indexNum * indexSize);
         this.mappedFile = new MappedFile(fileName, fileTotalSize);
@@ -89,11 +94,20 @@ public class IndexFile {
         return this.mappedFile.destroy(intervalForcibly);
     }
 
+    /**
+     * @param key key
+     * @param phyOffset 物理offset
+     * @param storeTimestamp 消息存储时间
+     * @return
+     */
     public boolean putKey(final String key, final long phyOffset, final long storeTimestamp) {
-        if (this.indexHeader.getIndexCount() < this.indexNum) {
+        if (this.indexHeader.getIndexCount() < this.indexNum) { // 未写满
+            // 1. key.hasCode
             int keyHash = indexKeyHashMethod(key);
+            // 2. key.hasCode % 500w
             int slotPos = keyHash % this.hashSlotNum;
-            int absSlotPos = IndexHeader.INDEX_HEADER_SIZE + slotPos * hashSlotSize;
+            // 3. 找到slot
+            int absSlotPos = IndexHeader.INDEX_HEADER_SIZE/*20*/ + slotPos * hashSlotSize/*4*/;
 
             FileLock fileLock = null;
 
@@ -101,11 +115,13 @@ public class IndexFile {
 
                 // fileLock = this.fileChannel.lock(absSlotPos, hashSlotSize,
                 // false);
+                // 4. slot对应value 记录了上一个同hash的key的「位置」 如果为0 还没有冲突 如果非0 可以找到上一个索引位置
                 int slotValue = this.mappedByteBuffer.getInt(absSlotPos);
                 if (slotValue <= invalidIndex || slotValue > this.indexHeader.getIndexCount()) {
                     slotValue = invalidIndex;
                 }
 
+                // 5. 当前消息的时间差
                 long timeDiff = storeTimestamp - this.indexHeader.getBeginTimestamp();
 
                 timeDiff = timeDiff / 1000;
@@ -118,17 +134,21 @@ public class IndexFile {
                     timeDiff = 0;
                 }
 
+                // 6. 索引开始位置 = header长度 + slot总长度 + 索引数量 * 20
                 int absIndexPos =
-                    IndexHeader.INDEX_HEADER_SIZE + this.hashSlotNum * hashSlotSize
-                        + this.indexHeader.getIndexCount() * indexSize;
+                    IndexHeader.INDEX_HEADER_SIZE/*20*/ + this.hashSlotNum/*500w*/ * hashSlotSize/*4*/
+                        + this.indexHeader.getIndexCount()/*索引数量从1开始*/ * indexSize/*20*/;
 
+                // 7. 索引数据 keyHash + 物理offset + 时间差 + 上一个冲突的key的位置
                 this.mappedByteBuffer.putInt(absIndexPos, keyHash);
                 this.mappedByteBuffer.putLong(absIndexPos + 4, phyOffset);
                 this.mappedByteBuffer.putInt(absIndexPos + 4 + 8, (int) timeDiff);
                 this.mappedByteBuffer.putInt(absIndexPos + 4 + 8 + 4, slotValue);
 
+                // 8. 更新slotValue = 当前索引数量
                 this.mappedByteBuffer.putInt(absSlotPos, this.indexHeader.getIndexCount());
 
+                // 9. 更新indexHeader
                 if (this.indexHeader.getIndexCount() <= 1) {
                     this.indexHeader.setBeginPhyOffset(phyOffset);
                     this.indexHeader.setBeginTimestamp(storeTimestamp);

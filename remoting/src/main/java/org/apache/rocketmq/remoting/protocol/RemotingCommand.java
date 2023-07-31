@@ -17,6 +17,13 @@
 package org.apache.rocketmq.remoting.protocol;
 
 import com.alibaba.fastjson.annotation.JSONField;
+import org.apache.rocketmq.logging.InternalLogger;
+import org.apache.rocketmq.logging.InternalLoggerFactory;
+import org.apache.rocketmq.remoting.CommandCustomHeader;
+import org.apache.rocketmq.remoting.annotation.CFNotNull;
+import org.apache.rocketmq.remoting.common.RemotingHelper;
+import org.apache.rocketmq.remoting.exception.RemotingCommandException;
+
 import java.lang.annotation.Annotation;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
@@ -24,12 +31,6 @@ import java.nio.ByteBuffer;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
-import org.apache.rocketmq.remoting.CommandCustomHeader;
-import org.apache.rocketmq.remoting.annotation.CFNotNull;
-import org.apache.rocketmq.remoting.common.RemotingHelper;
-import org.apache.rocketmq.remoting.exception.RemotingCommandException;
-import org.apache.rocketmq.logging.InternalLogger;
-import org.apache.rocketmq.logging.InternalLoggerFactory;
 
 public class RemotingCommand {
     public static final String SERIALIZE_TYPE_PROPERTY = "rocketmq.serialize.type";
@@ -69,17 +70,18 @@ public class RemotingCommand {
         }
     }
 
-    private int code;
-    private LanguageCode language = LanguageCode.JAVA;
-    private int version = 0;
-    private int opaque = requestId.getAndIncrement();
-    private int flag = 0;
-    private String remark;
+    private int code; // 报文业务code
+    private LanguageCode language = LanguageCode.JAVA; // 语言
+    private int version = 0; // rocketmq版本号 MQVersion.CURRENT_VERSION
+    private int opaque = requestId.getAndIncrement(); // 请求id
+    private int flag = 0; // 标志位
+    private String remark; // 提示信息
+    // 自定义头部
     private HashMap<String, String> extFields;
     private transient CommandCustomHeader customHeader;
-
+    // 序列化类型
     private SerializeType serializeTypeCurrentRPC = serializeTypeConfigInThisServer;
-
+    // 请求体
     private transient byte[] body;
 
     protected RemotingCommand() {

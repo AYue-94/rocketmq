@@ -16,6 +16,16 @@
  */
 package org.apache.rocketmq.store.index;
 
+import org.apache.rocketmq.common.UtilAll;
+import org.apache.rocketmq.common.constant.LoggerName;
+import org.apache.rocketmq.common.message.MessageConst;
+import org.apache.rocketmq.common.sysflag.MessageSysFlag;
+import org.apache.rocketmq.logging.InternalLogger;
+import org.apache.rocketmq.logging.InternalLoggerFactory;
+import org.apache.rocketmq.store.DefaultMessageStore;
+import org.apache.rocketmq.store.DispatchRequest;
+import org.apache.rocketmq.store.config.StorePathConfigHelper;
+
 import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
@@ -23,15 +33,6 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
-import org.apache.rocketmq.common.UtilAll;
-import org.apache.rocketmq.common.constant.LoggerName;
-import org.apache.rocketmq.logging.InternalLogger;
-import org.apache.rocketmq.logging.InternalLoggerFactory;
-import org.apache.rocketmq.common.message.MessageConst;
-import org.apache.rocketmq.common.sysflag.MessageSysFlag;
-import org.apache.rocketmq.store.DefaultMessageStore;
-import org.apache.rocketmq.store.DispatchRequest;
-import org.apache.rocketmq.store.config.StorePathConfigHelper;
 
 public class IndexService {
     private static final InternalLogger log = InternalLoggerFactory.getLogger(LoggerName.STORE_LOGGER_NAME);
@@ -40,9 +41,11 @@ public class IndexService {
      */
     private static final int MAX_TRY_IDX_CREATE = 3;
     private final DefaultMessageStore defaultMessageStore;
-    private final int hashSlotNum;
-    private final int indexNum;
-    private final String storePath;
+    private final int hashSlotNum; // 5000000 = 500w
+    private final int indexNum; // 5000000 * 4 = 2kw
+    private final String storePath; // index目录
+    // 管理MappedFile集合
+    // 为什么不用MappedFileQueue，因为文件名不是物理offset，而是时间戳
     private final ArrayList<IndexFile> indexFileList = new ArrayList<IndexFile>();
     private final ReadWriteLock readWriteLock = new ReentrantReadWriteLock();
 
@@ -171,8 +174,8 @@ public class IndexService {
                         indexLastUpdatePhyoffset = f.getEndPhyOffset();
                     }
 
-                    if (f.isTimeMatched(begin, end)) {
-
+                    if (f.isTimeMatched(begin, end)) { // 如果indexfile包含这个区间的数据
+                        // 从indexfile中查询key对应物理offset，注入phyOffsets
                         f.selectPhyOffset(phyOffsets, buildKey(topic, key), maxNum, begin, end, lastFile);
                     }
 
@@ -199,12 +202,14 @@ public class IndexService {
     }
 
     public void buildIndex(DispatchRequest req) {
+        // 创建或获取IndexFile
         IndexFile indexFile = retryGetAndCreateIndexFile();
         if (indexFile != null) {
             long endPhyOffset = indexFile.getEndPhyOffset();
             DispatchRequest msg = req;
             String topic = msg.getTopic();
-            String keys = msg.getKeys();
+            String keys = msg.getKeys(); // 业务keys
+            // 已经处理过这个物理offset，忽略
             if (msg.getCommitLogOffset() < endPhyOffset) {
                 return;
             }
@@ -219,6 +224,7 @@ public class IndexService {
                     return;
             }
 
+            // 生产者msgId
             if (req.getUniqKey() != null) {
                 indexFile = putKey(indexFile, msg, buildKey(topic, req.getUniqKey()));
                 if (indexFile == null) {
@@ -227,11 +233,13 @@ public class IndexService {
                 }
             }
 
+            // 业务keys
             if (keys != null && keys.length() > 0) {
                 String[] keyset = keys.split(MessageConst.KEY_SEPARATOR);
                 for (int i = 0; i < keyset.length; i++) {
                     String key = keyset[i];
                     if (key.length() > 0) {
+                        // 每个key执行一次putKey
                         indexFile = putKey(indexFile, msg, buildKey(topic, key));
                         if (indexFile == null) {
                             log.error("putKey error commitlog {} uniqkey {}", req.getCommitLogOffset(), req.getUniqKey());
@@ -246,7 +254,10 @@ public class IndexService {
     }
 
     private IndexFile putKey(IndexFile indexFile, DispatchRequest msg, String idxKey) {
+        // 写index
         for (boolean ok = indexFile.putKey(idxKey, msg.getCommitLogOffset(), msg.getStoreTimestamp()); !ok; ) {
+
+            // index文件写满，创建下一个文件
             log.warn("Index file [" + indexFile.getFileName() + "] is full, trying to create another one");
 
             indexFile = retryGetAndCreateIndexFile();
@@ -254,6 +265,7 @@ public class IndexService {
                 return null;
             }
 
+            // 继续写入index
             ok = indexFile.putKey(idxKey, msg.getCommitLogOffset(), msg.getStoreTimestamp());
         }
 

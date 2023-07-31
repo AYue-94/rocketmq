@@ -20,10 +20,13 @@ import java.nio.ByteBuffer;
 
 public class SelectMappedBufferResult {
 
+    // 物理offset
     private final long startOffset;
 
+    // 一段buffer 从物理offset开始，到物理offset+size结束
     private final ByteBuffer byteBuffer;
 
+    // buffer的大小
     private int size;
 
     private MappedFile mappedFile;

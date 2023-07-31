@@ -18,6 +18,16 @@ package org.apache.rocketmq.store;
 
 import com.sun.jna.NativeLong;
 import com.sun.jna.Pointer;
+import org.apache.rocketmq.common.UtilAll;
+import org.apache.rocketmq.common.constant.LoggerName;
+import org.apache.rocketmq.common.message.MessageExt;
+import org.apache.rocketmq.common.message.MessageExtBatch;
+import org.apache.rocketmq.logging.InternalLogger;
+import org.apache.rocketmq.logging.InternalLoggerFactory;
+import org.apache.rocketmq.store.config.FlushDiskType;
+import org.apache.rocketmq.store.util.LibC;
+import sun.nio.ch.DirectBuffer;
+
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
@@ -31,15 +41,6 @@ import java.security.AccessController;
 import java.security.PrivilegedAction;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
-import org.apache.rocketmq.common.UtilAll;
-import org.apache.rocketmq.common.constant.LoggerName;
-import org.apache.rocketmq.logging.InternalLogger;
-import org.apache.rocketmq.logging.InternalLoggerFactory;
-import org.apache.rocketmq.common.message.MessageExt;
-import org.apache.rocketmq.common.message.MessageExtBatch;
-import org.apache.rocketmq.store.config.FlushDiskType;
-import org.apache.rocketmq.store.util.LibC;
-import sun.nio.ch.DirectBuffer;
 
 public class MappedFile extends ReferenceResource {
     public static final int OS_PAGE_SIZE = 1024 * 4;
@@ -48,20 +49,32 @@ public class MappedFile extends ReferenceResource {
     private static final AtomicLong TOTAL_MAPPED_VIRTUAL_MEMORY = new AtomicLong(0);
 
     private static final AtomicInteger TOTAL_MAPPED_FILES = new AtomicInteger(0);
-    protected final AtomicInteger wrotePosition = new AtomicInteger(0);
-    protected final AtomicInteger committedPosition = new AtomicInteger(0);
-    private final AtomicInteger flushedPosition = new AtomicInteger(0);
-    protected int fileSize;
-    protected FileChannel fileChannel;
+
     /**
      * Message will put to here first, and then reput to FileChannel if writeBuffer is not null.
      */
+    // TransientStorePool相关，默认未开启
     protected ByteBuffer writeBuffer = null;
     protected TransientStorePool transientStorePool = null;
-    private String fileName;
-    private long fileFromOffset;
+    // 一个文件
     private File file;
+    // 这个文件名
+    private String fileName;
+    // 这个文件代表的起始offset
+    private long fileFromOffset;
+    // 这个文件映射到内存buffer
     private MappedByteBuffer mappedByteBuffer;
+    // 这个文件的FileChannel
+    protected FileChannel fileChannel;
+    // 文件大小（定长）
+    protected int fileSize;
+    // 这个文件映射到内存buffer，对应内存buffer的一些指针
+    // 写pagecache进度
+    protected final AtomicInteger wrotePosition = new AtomicInteger(0);
+    protected final AtomicInteger committedPosition = new AtomicInteger(0);
+    // 刷盘进度
+    private final AtomicInteger flushedPosition = new AtomicInteger(0);
+
     private volatile long storeTimestamp = 0;
     private boolean firstCreateInQueue = false;
 
@@ -155,10 +168,12 @@ public class MappedFile extends ReferenceResource {
         this.fileFromOffset = Long.parseLong(this.file.getName());
         boolean ok = false;
 
+        // mkdirs 父目录
         ensureDirOK(this.file.getParent());
 
         try {
             this.fileChannel = new RandomAccessFile(this.file, "rw").getChannel();
+            // 映射到内存buffer
             this.mappedByteBuffer = this.fileChannel.map(MapMode.READ_WRITE, 0, fileSize);
             TOTAL_MAPPED_VIRTUAL_MEMORY.addAndGet(fileSize);
             TOTAL_MAPPED_FILES.incrementAndGet();
@@ -269,8 +284,10 @@ public class MappedFile extends ReferenceResource {
      * @return The current flushed position
      */
     public int flush(final int flushLeastPages) {
+        // 如果wrotePosition > flushPosition 才执行刷盘
         if (this.isAbleToFlush(flushLeastPages)) {
             if (this.hold()) {
+                // wrotePosition
                 int value = getReadPosition();
 
                 try {
@@ -278,7 +295,7 @@ public class MappedFile extends ReferenceResource {
                     if (writeBuffer != null || this.fileChannel.position() != 0) {
                         this.fileChannel.force(false);
                     } else {
-                        this.mappedByteBuffer.force();
+                        this.mappedByteBuffer.force(); // force api 刷盘
                     }
                 } catch (Throwable e) {
                     log.error("Error occurred when force data to disk.", e);
@@ -399,12 +416,13 @@ public class MappedFile extends ReferenceResource {
     }
 
     public SelectMappedBufferResult selectMappedBuffer(int pos) {
-        int readPosition = getReadPosition();
+        int readPosition = getReadPosition(); // wrotePosition
         if (pos < readPosition && pos >= 0) {
             if (this.hold()) {
                 ByteBuffer byteBuffer = this.mappedByteBuffer.slice();
                 byteBuffer.position(pos);
                 int size = readPosition - pos;
+                // 从pos开始的一段buffer，limit是wrotePosition-pos
                 ByteBuffer byteBufferNew = byteBuffer.slice();
                 byteBufferNew.limit(size);
                 return new SelectMappedBufferResult(this.fileFromOffset + pos, byteBufferNew, size, this);

@@ -28,7 +28,7 @@ public class TopicConfig {
     private int perm = PermName.PERM_READ | PermName.PERM_WRITE;
     private TopicFilterType topicFilterType = TopicFilterType.SINGLE_TAG;
     private int topicSysFlag = 0;
-    private boolean order = false;
+    private boolean order = false; // nameserver静态路由
 
     public TopicConfig() {
     }

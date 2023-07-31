@@ -16,16 +16,12 @@
  */
 package org.apache.rocketmq.namesrv;
 
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
 import org.apache.rocketmq.common.Configuration;
 import org.apache.rocketmq.common.ThreadFactoryImpl;
 import org.apache.rocketmq.common.constant.LoggerName;
+import org.apache.rocketmq.common.namesrv.NamesrvConfig;
 import org.apache.rocketmq.logging.InternalLogger;
 import org.apache.rocketmq.logging.InternalLoggerFactory;
-import org.apache.rocketmq.common.namesrv.NamesrvConfig;
 import org.apache.rocketmq.namesrv.kvconfig.KVConfigManager;
 import org.apache.rocketmq.namesrv.processor.ClusterTestRequestProcessor;
 import org.apache.rocketmq.namesrv.processor.DefaultRequestProcessor;
@@ -38,6 +34,11 @@ import org.apache.rocketmq.remoting.netty.NettyServerConfig;
 import org.apache.rocketmq.remoting.netty.TlsSystemConfig;
 import org.apache.rocketmq.srvutil.FileWatchService;
 
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+
 
 public class NamesrvController {
     private static final InternalLogger log = InternalLoggerFactory.getLogger(LoggerName.NAMESRV_LOGGER_NAME);
@@ -48,13 +49,19 @@ public class NamesrvController {
 
     private final ScheduledExecutorService scheduledExecutorService = Executors.newSingleThreadScheduledExecutor(new ThreadFactoryImpl(
         "NSScheduledThread"));
+    // kv配置管理
     private final KVConfigManager kvConfigManager;
+
+    // 路由管理
     private final RouteInfoManager routeInfoManager;
 
+    // 通讯server
     private RemotingServer remotingServer;
 
+    // 长连接变更管理
     private BrokerHousekeepingService brokerHousekeepingService;
 
+    // 处理请求的业务线程池
     private ExecutorService remotingExecutor;
 
     private Configuration configuration;

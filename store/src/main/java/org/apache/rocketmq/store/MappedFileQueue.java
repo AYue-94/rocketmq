@@ -16,6 +16,11 @@
  */
 package org.apache.rocketmq.store;
 
+import org.apache.rocketmq.common.UtilAll;
+import org.apache.rocketmq.common.constant.LoggerName;
+import org.apache.rocketmq.logging.InternalLogger;
+import org.apache.rocketmq.logging.InternalLoggerFactory;
+
 import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
@@ -24,10 +29,6 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.ListIterator;
 import java.util.concurrent.CopyOnWriteArrayList;
-import org.apache.rocketmq.common.UtilAll;
-import org.apache.rocketmq.common.constant.LoggerName;
-import org.apache.rocketmq.logging.InternalLogger;
-import org.apache.rocketmq.logging.InternalLoggerFactory;
 
 public class MappedFileQueue {
     private static final InternalLogger log = InternalLoggerFactory.getLogger(LoggerName.STORE_LOGGER_NAME);
@@ -35,15 +36,17 @@ public class MappedFileQueue {
 
     private static final int DELETE_FILES_BATCH_MAX = 10;
 
+    // MappedFile存储路径，比如CommitLog默认{home}/store/commitlog
     private final String storePath;
-
+    // 每个MappedFile大小
     private final int mappedFileSize;
-
+    // MappedFile列表
     private final CopyOnWriteArrayList<MappedFile> mappedFiles = new CopyOnWriteArrayList<MappedFile>();
-
+    // 创建MappedFile服务
     private final AllocateMappedFileService allocateMappedFileService;
-
+    // flush进度
     private long flushedWhere = 0;
+    // commit进度
     private long committedWhere = 0;
 
     private volatile long storeTimestamp = 0;
@@ -145,13 +148,14 @@ public class MappedFileQueue {
     }
 
     public boolean load() {
+        // ~/store/commitlog
         File dir = new File(this.storePath);
         File[] files = dir.listFiles();
         if (files != null) {
             // ascending order
             Arrays.sort(files);
             for (File file : files) {
-
+                // 文件大小不等于1G，返回false
                 if (file.length() != this.mappedFileSize) {
                     log.warn(file + "\t" + file.length()
                         + " length not matched message store config value, please check it manually");
@@ -159,11 +163,13 @@ public class MappedFileQueue {
                 }
 
                 try {
+                    // 映射1G的MappedFile
                     MappedFile mappedFile = new MappedFile(file.getPath(), mappedFileSize);
-
+                    // 这些position将在recover时MappedFileQueue.truncateDirtyFiles修复
                     mappedFile.setWrotePosition(this.mappedFileSize);
                     mappedFile.setFlushedPosition(this.mappedFileSize);
                     mappedFile.setCommittedPosition(this.mappedFileSize);
+                    // 加入mappedFiles列表
                     this.mappedFiles.add(mappedFile);
                     log.info("load " + file.getPath() + " OK");
                 } catch (IOException e) {
@@ -195,11 +201,11 @@ public class MappedFileQueue {
         long createOffset = -1;
         MappedFile mappedFileLast = getLastMappedFile();
 
-        if (mappedFileLast == null) {
+        if (mappedFileLast == null) { // 还没有文件
             createOffset = startOffset - (startOffset % this.mappedFileSize);
         }
 
-        if (mappedFileLast != null && mappedFileLast.isFull()) {
+        if (mappedFileLast != null && mappedFileLast.isFull()) { // 最后一个文件已满
             createOffset = mappedFileLast.getFileFromOffset() + this.mappedFileSize;
         }
 
@@ -424,10 +430,13 @@ public class MappedFileQueue {
 
     public boolean flush(final int flushLeastPages) {
         boolean result = true;
+        // 根据上次刷盘的物理offset，找到所在MappedFile，往往是最后一个文件
         MappedFile mappedFile = this.findMappedFileByOffset(this.flushedWhere, this.flushedWhere == 0);
         if (mappedFile != null) {
             long tmpTimeStamp = mappedFile.getStoreTimestamp();
+            // 执行MappedFile.flush
             int offset = mappedFile.flush(flushLeastPages);
+            // 更新flushedWhere=物理offset
             long where = mappedFile.getFileFromOffset() + offset;
             result = where == this.flushedWhere;
             this.flushedWhere = where;

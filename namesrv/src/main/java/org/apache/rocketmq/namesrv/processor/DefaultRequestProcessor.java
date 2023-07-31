@@ -17,9 +17,6 @@
 package org.apache.rocketmq.namesrv.processor;
 
 import io.netty.channel.ChannelHandlerContext;
-import java.io.UnsupportedEncodingException;
-import java.util.Properties;
-import java.util.concurrent.atomic.AtomicLong;
 import org.apache.rocketmq.common.DataVersion;
 import org.apache.rocketmq.common.MQVersion;
 import org.apache.rocketmq.common.MQVersion.Version;
@@ -27,8 +24,6 @@ import org.apache.rocketmq.common.MixAll;
 import org.apache.rocketmq.common.UtilAll;
 import org.apache.rocketmq.common.constant.LoggerName;
 import org.apache.rocketmq.common.help.FAQUrl;
-import org.apache.rocketmq.logging.InternalLogger;
-import org.apache.rocketmq.logging.InternalLoggerFactory;
 import org.apache.rocketmq.common.namesrv.NamesrvUtil;
 import org.apache.rocketmq.common.namesrv.RegisterBrokerResult;
 import org.apache.rocketmq.common.protocol.RequestCode;
@@ -51,11 +46,17 @@ import org.apache.rocketmq.common.protocol.header.namesrv.UnRegisterBrokerReques
 import org.apache.rocketmq.common.protocol.header.namesrv.WipeWritePermOfBrokerRequestHeader;
 import org.apache.rocketmq.common.protocol.header.namesrv.WipeWritePermOfBrokerResponseHeader;
 import org.apache.rocketmq.common.protocol.route.TopicRouteData;
+import org.apache.rocketmq.logging.InternalLogger;
+import org.apache.rocketmq.logging.InternalLoggerFactory;
 import org.apache.rocketmq.namesrv.NamesrvController;
 import org.apache.rocketmq.remoting.common.RemotingHelper;
 import org.apache.rocketmq.remoting.exception.RemotingCommandException;
 import org.apache.rocketmq.remoting.netty.NettyRequestProcessor;
 import org.apache.rocketmq.remoting.protocol.RemotingCommand;
+
+import java.io.UnsupportedEncodingException;
+import java.util.Properties;
+import java.util.concurrent.atomic.AtomicLong;
 
 public class DefaultRequestProcessor implements NettyRequestProcessor {
     private static InternalLogger log = InternalLoggerFactory.getLogger(LoggerName.NAMESRV_LOGGER_NAME);
@@ -217,18 +218,20 @@ public class DefaultRequestProcessor implements NettyRequestProcessor {
         }
 
         RegisterBrokerResult result = this.namesrvController.getRouteInfoManager().registerBroker(
-            requestHeader.getClusterName(),
-            requestHeader.getBrokerAddr(),
-            requestHeader.getBrokerName(),
-            requestHeader.getBrokerId(),
-            requestHeader.getHaServerAddr(),
-            registerBrokerBody.getTopicConfigSerializeWrapper(),
-            registerBrokerBody.getFilterServerList(),
-            ctx.channel());
+            requestHeader.getClusterName(), // clusterName
+            requestHeader.getBrokerAddr(), // broker地址
+            requestHeader.getBrokerName(), // broker名
+            requestHeader.getBrokerId(), // broker id，0=master
+            requestHeader.getHaServerAddr(), // broker ha地址
+            registerBrokerBody.getTopicConfigSerializeWrapper(), // broker管理的topic信息
+            registerBrokerBody.getFilterServerList(), // filterserver - sql92过滤
+            ctx.channel()); // netty channel
 
+        // response.header = master的ha地址；master地址
         responseHeader.setHaServerAddr(result.getHaServerAddr());
         responseHeader.setMasterAddr(result.getMasterAddr());
 
+        // response.body = 所有topic的ORDER_TOPIC_CONFIG
         byte[] jsonValue = this.namesrvController.getKvConfigManager().getKVListByNamespace(NamesrvUtil.NAMESPACE_ORDER_TOPIC_CONFIG);
         response.setBody(jsonValue);
 
