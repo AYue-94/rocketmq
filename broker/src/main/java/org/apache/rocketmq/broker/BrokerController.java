@@ -280,11 +280,12 @@ public class BrokerController {
                 new ThreadFactoryImpl("SendMessageThread_"));
 
             this.pullMessageExecutor = new BrokerFixedThreadPoolExecutor(
+                    // 16 + Runtime.getRuntime().availableProcessors() * 2
                 this.brokerConfig.getPullMessageThreadPoolNums(),
                 this.brokerConfig.getPullMessageThreadPoolNums(),
                 1000 * 60,
                 TimeUnit.MILLISECONDS,
-                this.pullThreadPoolQueue,
+                this.pullThreadPoolQueue, // 10w linked
                 new ThreadFactoryImpl("PullMessageThread_"));
 
             this.replyMessageExecutor = new BrokerFixedThreadPoolExecutor(
@@ -359,7 +360,7 @@ public class BrokerController {
                         log.error("schedule persist consumerOffset error.", e);
                     }
                 }
-            }, 1000 * 10, this.brokerConfig.getFlushConsumerOffsetInterval(), TimeUnit.MILLISECONDS);
+            }, 1000 * 10, this.brokerConfig.getFlushConsumerOffsetInterval()/*5000*/, TimeUnit.MILLISECONDS);
 
             this.scheduledExecutorService.scheduleAtFixedRate(new Runnable() {
                 @Override

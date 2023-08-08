@@ -30,6 +30,10 @@ public class ConsumeConcurrentlyContext {
      * >0,client control retry frequency
      */
     private int delayLevelWhenNextConsume = 0;
+
+    /**
+     * 当批量消费时，指定ack消息位置
+     */
     private int ackIndex = Integer.MAX_VALUE;
 
     public ConsumeConcurrentlyContext(MessageQueue messageQueue) {

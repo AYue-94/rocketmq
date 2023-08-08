@@ -751,8 +751,10 @@ public class MQClientAPIImpl {
                 RemotingCommand response = responseFuture.getResponseCommand();
                 if (response != null) {
                     try {
+                        // 将response转换为PullResult
                         PullResult pullResult = MQClientAPIImpl.this.processPullResponse(response);
                         assert pullResult != null;
+                        // 执行callback
                         pullCallback.onSuccess(pullResult);
                     } catch (Exception e) {
                         pullCallback.onException(e);
@@ -1108,12 +1110,12 @@ public class MQClientAPIImpl {
         ConsumerSendMsgBackRequestHeader requestHeader = new ConsumerSendMsgBackRequestHeader();
         RemotingCommand request = RemotingCommand.createRequestCommand(RequestCode.CONSUMER_SEND_MSG_BACK, requestHeader);
 
-        requestHeader.setGroup(consumerGroup);
-        requestHeader.setOriginTopic(msg.getTopic());
-        requestHeader.setOffset(msg.getCommitLogOffset());
-        requestHeader.setDelayLevel(delayLevel);
-        requestHeader.setOriginMsgId(msg.getMsgId());
-        requestHeader.setMaxReconsumeTimes(maxConsumeRetryTimes);
+        requestHeader.setGroup(consumerGroup); // 消费组
+        requestHeader.setOriginTopic(msg.getTopic()); // 原始topic
+        requestHeader.setOffset(msg.getCommitLogOffset()); // 消息对应commitlog物理offset
+        requestHeader.setDelayLevel(delayLevel); // 延迟级别0
+        requestHeader.setOriginMsgId(msg.getMsgId()); // 消息id
+        requestHeader.setMaxReconsumeTimes(maxConsumeRetryTimes); // 最大重试次数16
 
         RemotingCommand response = this.remotingClient.invokeSync(MixAll.brokerVIPChannel(this.clientConfig.isVipChannelEnabled(), addr),
             request, timeoutMillis);

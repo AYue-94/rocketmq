@@ -348,6 +348,7 @@ public class CommitLog {
                         }
 
                         if (delayLevel > 0) {
+                            // 延迟消息的tag = 存储时间 + 延迟时间
                             tagsCode = this.defaultMessageStore.getScheduleMessageService().computeDeliverTimestamp(delayLevel,
                                 storeTimestamp);
                         }
@@ -568,20 +569,22 @@ public class CommitLog {
         String topic = msg.getTopic();
         int queueId = msg.getQueueId();
 
-        // 事务消息相关
+        // 延迟消息
         final int tranType = MessageSysFlag.getTransactionValue(msg.getSysFlag());
-        if (tranType == MessageSysFlag.TRANSACTION_NOT_TYPE
-            || tranType == MessageSysFlag.TRANSACTION_COMMIT_TYPE) {
+        if (tranType == MessageSysFlag.TRANSACTION_NOT_TYPE // 非事务消息
+            || tranType == MessageSysFlag.TRANSACTION_COMMIT_TYPE) { // 事务消息commit
             // Delay Delivery
             if (msg.getDelayTimeLevel() > 0) {
                 if (msg.getDelayTimeLevel() > this.defaultMessageStore.getScheduleMessageService().getMaxDelayLevel()) {
                     msg.setDelayTimeLevel(this.defaultMessageStore.getScheduleMessageService().getMaxDelayLevel());
                 }
 
+                // 替换topic=SCHEDULE_TOPIC_XXXX,queueId=delayLevel-1
                 topic = ScheduleMessageService.SCHEDULE_TOPIC;
                 queueId = ScheduleMessageService.delayLevel2QueueId(msg.getDelayTimeLevel());
 
                 // Backup real topic, queueId
+                // 设置properties.REAL_TOPIC=原topic（%RETRY%+group），REAL_QID=原queueId
                 MessageAccessor.putProperty(msg, MessageConst.PROPERTY_REAL_TOPIC, msg.getTopic());
                 MessageAccessor.putProperty(msg, MessageConst.PROPERTY_REAL_QUEUE_ID, String.valueOf(msg.getQueueId()));
                 msg.setPropertiesString(MessageDecoder.messageProperties2String(msg.getProperties()));
@@ -892,10 +895,13 @@ public class CommitLog {
         return -1;
     }
 
-    public SelectMappedBufferResult getMessage(final long offset, final int size) {
+    public SelectMappedBufferResult getMessage(final long offset/*commitlog物理offset*/,
+                                               final int size/*消息长度*/) {
         int mappedFileSize = this.defaultMessageStore.getMessageStoreConfig().getMappedFileSizeCommitLog();
+        // 根据物理offset，找commitlog下文件
         MappedFile mappedFile = this.mappedFileQueue.findMappedFileByOffset(offset, offset == 0);
         if (mappedFile != null) {
+            // 找文件中物理offset对应size长度的buffer
             int pos = (int) (offset % mappedFileSize);
             return mappedFile.selectMappedBuffer(pos, size);
         }

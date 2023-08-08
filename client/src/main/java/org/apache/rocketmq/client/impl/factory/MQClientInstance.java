@@ -244,11 +244,11 @@ public class MQClientInstance {
                     // Start various schedule tasks
                     this.startScheduledTask(); // 开启定时任务
                     // Start pull service
-                    this.pullMessageService.start(); // 消费者相关
+                    this.pullMessageService.start(); // 消费者拉消息线程
                     // Start rebalance service
-                    this.rebalanceService.start(); // 消费者相关
+                    this.rebalanceService.start(); // 消费者rebalance线程
                     // Start push service
-                    this.defaultMQProducer.getDefaultMQProducerImpl().start(false);// 消费者相关
+                    this.defaultMQProducer.getDefaultMQProducerImpl().start(false);// 消费重试producer
                     log.info("the client factory [{}] start OK", this.clientId);
                     this.serviceState = ServiceState.RUNNING;
                     break;
@@ -275,6 +275,7 @@ public class MQClientInstance {
             }, 1000 * 10, 1000 * 60 * 2, TimeUnit.MILLISECONDS);
         }
 
+        // 每30s刷新路由
         this.scheduledExecutorService.scheduleAtFixedRate(new Runnable() {
 
             @Override
@@ -287,6 +288,7 @@ public class MQClientInstance {
             }
         }, 10, this.clientConfig.getPollNameServerInterval()/*30s*/, TimeUnit.MILLISECONDS);
 
+        // 每30秒 剔除下线broker 发送心跳
         this.scheduledExecutorService.scheduleAtFixedRate(new Runnable() {
 
             @Override
@@ -300,6 +302,7 @@ public class MQClientInstance {
             }
         }, 1000, this.clientConfig.getHeartbeatBrokerInterval()/*30s*/, TimeUnit.MILLISECONDS);
 
+        // 每5s进行消费者offset持久化
         this.scheduledExecutorService.scheduleAtFixedRate(new Runnable() {
 
             @Override
@@ -310,7 +313,7 @@ public class MQClientInstance {
                     log.error("ScheduledTask persistAllConsumerOffset exception", e);
                 }
             }
-        }, 1000 * 10, this.clientConfig.getPersistConsumerOffsetInterval(), TimeUnit.MILLISECONDS);
+        }, 1000 * 10, this.clientConfig.getPersistConsumerOffsetInterval()/*5s*/, TimeUnit.MILLISECONDS);
 
         this.scheduledExecutorService.scheduleAtFixedRate(new Runnable() {
 
@@ -990,7 +993,7 @@ public class MQClientInstance {
     }
 
     public void doRebalance() {
-        for (Map.Entry<String, MQConsumerInner> entry : this.consumerTable.entrySet()) {
+        for (Map.Entry<String/*group*/, MQConsumerInner> entry : this.consumerTable.entrySet()) {
             MQConsumerInner impl = entry.getValue();
             if (impl != null) {
                 try {

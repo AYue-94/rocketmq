@@ -20,15 +20,21 @@
  */
 package org.apache.rocketmq.common.protocol.heartbeat;
 
-import java.util.HashSet;
-import java.util.Set;
 import org.apache.rocketmq.common.consumer.ConsumeFromWhere;
 
+import java.util.HashSet;
+import java.util.Set;
+
 public class ConsumerData {
+    // 消费组
     private String groupName;
+    // pull or push
     private ConsumeType consumeType;
+    // 集群消费 or 广播消费
     private MessageModel messageModel;
+    // 从哪里开始消费，默认CONSUME_FROM_LAST_OFFSET
     private ConsumeFromWhere consumeFromWhere;
+    // 订阅信息
     private Set<SubscriptionData> subscriptionDataSet = new HashSet<SubscriptionData>();
     private boolean unitMode;
 

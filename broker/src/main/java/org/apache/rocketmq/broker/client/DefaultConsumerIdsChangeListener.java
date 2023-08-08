@@ -17,12 +17,11 @@
 package org.apache.rocketmq.broker.client;
 
 import io.netty.channel.Channel;
+import org.apache.rocketmq.broker.BrokerController;
+import org.apache.rocketmq.common.protocol.heartbeat.SubscriptionData;
 
 import java.util.Collection;
 import java.util.List;
-
-import org.apache.rocketmq.broker.BrokerController;
-import org.apache.rocketmq.common.protocol.heartbeat.SubscriptionData;
 
 public class DefaultConsumerIdsChangeListener implements ConsumerIdsChangeListener {
     private final BrokerController brokerController;
@@ -42,6 +41,7 @@ public class DefaultConsumerIdsChangeListener implements ConsumerIdsChangeListen
                     return;
                 }
                 List<Channel> channels = (List<Channel>) args[0];
+                // 循环netty的channel对应的客户端，发送NOTIFY_CONSUMER_IDS_CHANGED
                 if (channels != null && brokerController.getBrokerConfig().isNotifyConsumerIdsChangedEnable()) {
                     for (Channel chl : channels) {
                         this.brokerController.getBroker2Client().notifyConsumerIdsChanged(chl, group);

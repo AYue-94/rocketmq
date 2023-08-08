@@ -16,12 +16,13 @@
  */
 package org.apache.rocketmq.client.consumer.rebalance;
 
-import java.util.ArrayList;
-import java.util.List;
 import org.apache.rocketmq.client.consumer.AllocateMessageQueueStrategy;
 import org.apache.rocketmq.client.log.ClientLogger;
-import org.apache.rocketmq.logging.InternalLogger;
 import org.apache.rocketmq.common.message.MessageQueue;
+import org.apache.rocketmq.logging.InternalLogger;
+
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Average Hashing queue algorithm
@@ -63,6 +64,54 @@ public class AllocateMessageQueueAveragely implements AllocateMessageQueueStrate
         }
         return result;
     }
+
+    // 2个queue
+    // 3个client
+
+    // index = 0
+    // mod = 2
+    // averageSize = 1
+    // startIndex = index * averageSize = 0
+    // range = min(1,2-0)=1
+    // result = (0+0)%2=0
+
+    // index = 1
+    // mod = 2
+    // averageSize = 1
+    // startIndex = index * averageSize = 1
+    // range = min(1,2-1)=1
+    // result = (1+0)%2=1
+
+    // index = 2
+    // mod = 2
+    // averageSize = 1
+    // startIndex = index * averageSize + mod = 5
+    // range = min(1,2-5)=-3
+    // result =
+
+    // 8个queue
+    // 3个client 0 1 2
+
+    // index = 0
+    // mod = 2
+    // averageSize = 8/3 + 1 = 3
+    // startIndex = index * averageSize = 0 * 3 = 0
+    // range = min(3,8-3)=3
+    // result = (0+0)%8=0,(0+1)%8=1,(0+2)%8=2
+
+    // index = 1
+    // mod = 2
+    // averageSize = 8/3+1 = 3
+    // startIndex = index * averageSize = 3
+    // range = min(3,8-3)=3
+    // result = (3+0)%8=3,(3+1)%8=4,(3+2)%8=5,
+
+    // index = 2
+    // mod = 2
+    // averageSize = 8/3 = 2
+    // startIndex = index * averageSize + mod = 6
+    // range = min(2,8-6)=2
+    // result = (6+0)%8=6,(6+1)%8=7
 
     @Override
     public String getName() {

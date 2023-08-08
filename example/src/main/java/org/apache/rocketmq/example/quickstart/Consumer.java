@@ -36,7 +36,7 @@ public class Consumer {
         /*
          * Instantiate with specified consumer group name.
          */
-        DefaultMQPushConsumer consumer = new DefaultMQPushConsumer("quickstart-consumer", true);
+        DefaultMQPushConsumer consumer = new DefaultMQPushConsumer("quickstart-consumer99", true);
 
         /*
          * Specify name server addresses.
