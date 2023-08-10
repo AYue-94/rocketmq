@@ -146,6 +146,7 @@ public class Message implements Serializable {
     }
 
     public void setDelayTimeLevel(int level) {
+        // DELAY
         this.putProperty(MessageConst.PROPERTY_DELAY_TIME_LEVEL, String.valueOf(level));
     }
 

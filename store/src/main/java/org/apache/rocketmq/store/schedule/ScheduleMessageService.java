@@ -113,7 +113,10 @@ public class ScheduleMessageService extends ConfigManager {
 
     public void start() {
         if (started.compareAndSet(false, true)) {
+            // jdk timer 一个线程
             this.timer = new Timer("ScheduleMessageTimerThread", true);
+
+            // 消费延迟topic
             for (Map.Entry<Integer, Long> entry : this.delayLevelTable.entrySet()) {
                 Integer level = entry.getKey();
                 Long timeDelay = entry.getValue();
@@ -123,10 +126,12 @@ public class ScheduleMessageService extends ConfigManager {
                 }
 
                 if (timeDelay != null) {
+                    // 每个level开启一个DeliverDelayedMessageTimerTask，刚开始延迟1s
                     this.timer.schedule(new DeliverDelayedMessageTimerTask(level, offset), FIRST_DELAY_TIME);
                 }
             }
 
+            // 每10s 持久化消费进度delayOffset.json
             this.timer.scheduleAtFixedRate(new TimerTask() {
 
                 @Override
@@ -169,6 +174,7 @@ public class ScheduleMessageService extends ConfigManager {
 
     @Override
     public String configFilePath() {
+        // delayOffset.json
         return StorePathConfigHelper.getDelayOffsetStorePath(this.defaultMessageStore.getMessageStoreConfig()
             .getStorePathRootDir());
     }
@@ -196,7 +202,7 @@ public class ScheduleMessageService extends ConfigManager {
         timeUnitTable.put("m", 1000L * 60);
         timeUnitTable.put("h", 1000L * 60 * 60);
         timeUnitTable.put("d", 1000L * 60 * 60 * 24);
-
+        // 1s 5s 10s 30s 1m 2m 3m 4m 5m 6m 7m 8m 9m 10m 20m 30m 1h 2h
         String levelString = this.defaultMessageStore.getMessageStoreConfig().getMessageDelayLevel();
         try {
             String[] levelArray = levelString.split(" ");
@@ -248,11 +254,13 @@ public class ScheduleMessageService extends ConfigManager {
         /**
          * @return
          */
-        private long correctDeliverTimestamp(final long now, final long deliverTimestamp) {
+        private long correctDeliverTimestamp(final long now/*当前时间*/, final long deliverTimestamp/*目标投递时间*/) {
 
             long result = deliverTimestamp;
 
             long maxTimestamp = now + ScheduleMessageService.this.delayLevelTable.get(this.delayLevel);
+
+            // 目标投递时间 > 当前时间 + 延迟时间
             if (deliverTimestamp > maxTimestamp) {
                 result = now;
             }
@@ -261,6 +269,7 @@ public class ScheduleMessageService extends ConfigManager {
         }
 
         public void executeOnTimeup() {
+            // 根据topic、queueId找ConsumeQueue
             ConsumeQueue cq =
                 ScheduleMessageService.this.defaultMessageStore.findConsumeQueue(SCHEDULE_TOPIC,
                     delayLevel2QueueId(delayLevel));
@@ -268,16 +277,18 @@ public class ScheduleMessageService extends ConfigManager {
             long failScheduleOffset = offset;
 
             if (cq != null) {
+                // 根据逻辑offset，读consumequeue中buffer
                 SelectMappedBufferResult bufferCQ = cq.getIndexBuffer(this.offset);
                 if (bufferCQ != null) {
                     try {
                         long nextOffset = offset;
                         int i = 0;
                         ConsumeQueueExt.CqExtUnit cqExtUnit = new ConsumeQueueExt.CqExtUnit();
+                        // 循环每个consumequeue记录
                         for (; i < bufferCQ.getSize(); i += ConsumeQueue.CQ_STORE_UNIT_SIZE) {
-                            long offsetPy = bufferCQ.getByteBuffer().getLong();
-                            int sizePy = bufferCQ.getByteBuffer().getInt();
-                            long tagsCode = bufferCQ.getByteBuffer().getLong();
+                            long offsetPy = bufferCQ.getByteBuffer().getLong();// commitlog物理offset
+                            int sizePy = bufferCQ.getByteBuffer().getInt();// 消息长度
+                            long tagsCode = bufferCQ.getByteBuffer().getLong();// 【关注】目标投递时间
 
                             if (cq.isExtAddr(tagsCode)) {
                                 if (cq.getExt(tagsCode, cqExtUnit)) {
@@ -294,18 +305,24 @@ public class ScheduleMessageService extends ConfigManager {
                             long now = System.currentTimeMillis();
                             long deliverTimestamp = this.correctDeliverTimestamp(now, tagsCode);
 
+                            // 下一个逻辑offset
                             nextOffset = offset + (i / ConsumeQueue.CQ_STORE_UNIT_SIZE);
 
+                            // countdown <= 0 代表到达目标时间，可以投递
+                            // countdown > 0 代表还未到达目标时间，继续DeliverDelayedMessageTimerTask
                             long countdown = deliverTimestamp - now;
 
                             if (countdown <= 0) {
+                                // 根据commitlog物理offset+消息长度，读消息
                                 MessageExt msgExt =
                                     ScheduleMessageService.this.defaultMessageStore.lookMessageByOffset(
                                         offsetPy, sizePy);
 
                                 if (msgExt != null) {
                                     try {
+                                        // 回写真实topic和真实queue
                                         MessageExtBrokerInner msgInner = this.messageTimeup(msgExt);
+                                        // 写commitlog
                                         PutMessageResult putMessageResult =
                                             ScheduleMessageService.this.writeMessageStore
                                                 .putMessage(msgInner);
@@ -339,6 +356,7 @@ public class ScheduleMessageService extends ConfigManager {
                                     }
                                 }
                             } else {
+                                // 遇到消息还没到投递消息，重新提交task，更新offset，退出当前task
                                 ScheduleMessageService.this.timer.schedule(
                                     new DeliverDelayedMessageTimerTask(this.delayLevel, nextOffset),
                                     countdown);
@@ -381,7 +399,7 @@ public class ScheduleMessageService extends ConfigManager {
             TopicFilterType topicFilterType = MessageExt.parseTopicFilterType(msgInner.getSysFlag());
             long tagsCodeValue =
                 MessageExtBrokerInner.tagsString2tagsCode(topicFilterType, msgInner.getTags());
-            msgInner.setTagsCode(tagsCodeValue);
+            msgInner.setTagsCode(tagsCodeValue); // 真实tag
             msgInner.setPropertiesString(MessageDecoder.messageProperties2String(msgExt.getProperties()));
 
             msgInner.setSysFlag(msgExt.getSysFlag());
@@ -390,7 +408,8 @@ public class ScheduleMessageService extends ConfigManager {
             msgInner.setStoreHost(msgExt.getStoreHost());
             msgInner.setReconsumeTimes(msgExt.getReconsumeTimes());
 
-            msgInner.setWaitStoreMsgOK(false);
+            msgInner.setWaitStoreMsgOK(false); // 异步刷盘
+            // 移除properties.DELAY
             MessageAccessor.clearProperty(msgInner, MessageConst.PROPERTY_DELAY_TIME_LEVEL);
 
             // 回写真实topic

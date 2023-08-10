@@ -339,6 +339,7 @@ public class CommitLog {
 
                 // Timing message processing
                 {
+                    // properties.DELAY
                     String t = propertiesMap.get(MessageConst.PROPERTY_DELAY_TIME_LEVEL);
                     if (ScheduleMessageService.SCHEDULE_TOPIC.equals(topic) && t != null) {
                         int delayLevel = Integer.parseInt(t);
@@ -584,11 +585,11 @@ public class CommitLog {
                 queueId = ScheduleMessageService.delayLevel2QueueId(msg.getDelayTimeLevel());
 
                 // Backup real topic, queueId
-                // 设置properties.REAL_TOPIC=原topic（%RETRY%+group），REAL_QID=原queueId
+                // 设置properties.REAL_TOPIC=原topic，REAL_QID=原queueId
                 MessageAccessor.putProperty(msg, MessageConst.PROPERTY_REAL_TOPIC, msg.getTopic());
                 MessageAccessor.putProperty(msg, MessageConst.PROPERTY_REAL_QUEUE_ID, String.valueOf(msg.getQueueId()));
                 msg.setPropertiesString(MessageDecoder.messageProperties2String(msg.getProperties()));
-
+                // 修改message的topic和queue
                 msg.setTopic(topic);
                 msg.setQueueId(queueId);
             }
