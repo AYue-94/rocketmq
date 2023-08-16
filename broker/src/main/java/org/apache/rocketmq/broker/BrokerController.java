@@ -325,11 +325,11 @@ public class BrokerController {
                 new ThreadFactoryImpl("HeartbeatThread_", true));
 
             this.endTransactionExecutor = new BrokerFixedThreadPoolExecutor(
-                this.brokerConfig.getEndTransactionThreadPoolNums(),
-                this.brokerConfig.getEndTransactionThreadPoolNums(),
+                this.brokerConfig.getEndTransactionThreadPoolNums(), // 8 + 核数 * 2
+                this.brokerConfig.getEndTransactionThreadPoolNums(), // 8 + 核数 * 2
                 1000 * 60,
                 TimeUnit.MILLISECONDS,
-                this.endTransactionThreadPoolQueue,
+                this.endTransactionThreadPoolQueue, // 100000
                 new ThreadFactoryImpl("EndTransactionThread_"));
 
             this.consumerManageExecutor =

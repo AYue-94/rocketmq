@@ -63,7 +63,7 @@ public class ProcessQueue {
     private volatile boolean consuming = false;
     private volatile long msgAccCnt = 0;
 
-    public boolean isLockExpired() {
+    public boolean isLockExpired() { // 30s
         return (System.currentTimeMillis() - this.lastLockTimestamp) > REBALANCE_LOCK_MAX_LIVE_TIME;
     }
 
@@ -147,7 +147,7 @@ public class ProcessQueue {
                     }
                 }
                 msgCount.addAndGet(validMsgCnt);
-
+                // 当前缓存消息非空，且当前ProcessQueue没有在消费，返回true
                 if (!msgTreeMap.isEmpty() && !this.consuming) {
                     dispatchToConsume = true;
                     this.consuming = true;
@@ -278,6 +278,7 @@ public class ProcessQueue {
                 }
                 this.consumingMsgOrderlyTreeMap.clear();
                 if (offset != null) {
+                    // 返回本批消息最大offset+1作为提交offset
                     return offset + 1;
                 }
             } finally {
@@ -315,16 +316,19 @@ public class ProcessQueue {
             try {
                 if (!this.msgTreeMap.isEmpty()) {
                     for (int i = 0; i < batchSize; i++) {
+                        // 从头开始取Message
                         Map.Entry<Long, MessageExt> entry = this.msgTreeMap.pollFirstEntry();
                         if (entry != null) {
+                            // 加入结果集
                             result.add(entry.getValue());
+                            // 加入一个处理中的TreeMap
                             consumingMsgOrderlyTreeMap.put(entry.getKey(), entry.getValue());
                         } else {
                             break;
                         }
                     }
                 }
-
+                // 【focus】未获取到消息，将consuming标记为false
                 if (result.isEmpty()) {
                     consuming = false;
                 }

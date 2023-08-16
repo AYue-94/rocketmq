@@ -36,11 +36,10 @@ public class Producer {
             producer.setNamesrvAddr("localhost:9876");
             producer.start();
 
-            String[] tags = new String[] {"TagA", "TagB", "TagC", "TagD", "TagE"};
             for (int i = 0; i < 100; i++) {
                 int orderId = i % 10;
                 Message msg =
-                    new Message("TopicABC", tags[i % tags.length], "KEY" + i,
+                    new Message("TopicABC",
                         ("Hello RocketMQ " + i).getBytes(RemotingHelper.DEFAULT_CHARSET));
                 SendResult sendResult = producer.send(msg, new MessageQueueSelector() {
                     @Override

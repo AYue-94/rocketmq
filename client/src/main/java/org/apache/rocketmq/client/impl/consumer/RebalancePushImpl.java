@@ -93,6 +93,7 @@ public class RebalancePushImpl extends RebalanceImpl {
         if (this.defaultMQPushConsumerImpl.isConsumeOrderly()
             && MessageModel.CLUSTERING.equals(this.defaultMQPushConsumerImpl.messageModel())) {
             try {
+                // 与listener消费互斥，如果processqueue正在被用户代码消费，这里可能获取锁失败
                 if (pq.getLockConsume().tryLock(1000, TimeUnit.MILLISECONDS)) {
                     try {
                         return this.unlockDelay(mq, pq);
@@ -117,8 +118,9 @@ public class RebalancePushImpl extends RebalanceImpl {
 
     private boolean unlockDelay(final MessageQueue mq, final ProcessQueue pq) {
 
-        if (pq.hasTempMessage()) {
+        if (pq.hasTempMessage()) { // 如果processqueue中还有缓存的message
             log.info("[{}]unlockDelay, begin {} ", mq.hashCode(), mq);
+            // 延迟20s再unlock
             this.defaultMQPushConsumerImpl.getmQClientFactory().getScheduledExecutorService().schedule(new Runnable() {
                 @Override
                 public void run() {

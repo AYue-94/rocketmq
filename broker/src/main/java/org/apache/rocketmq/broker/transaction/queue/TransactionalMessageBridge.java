@@ -72,6 +72,7 @@ public class TransactionalMessageBridge {
     }
 
     public long fetchConsumeOffset(MessageQueue mq) {
+        // group = CID_RMQ_SYS_TRANS
         long offset = brokerController.getConsumerOffsetManager().queryOffset(TransactionalMessageUtil.buildConsumerGroup(),
             mq.getTopic(), mq.getQueueId());
         if (offset == -1) {
@@ -192,15 +193,20 @@ public class TransactionalMessageBridge {
     }
 
     public PutMessageResult putHalfMessage(MessageExtBrokerInner messageInner) {
-        return store.putMessage(parseHalfMessageInner(messageInner));
+        MessageExtBrokerInner messageExtBrokerInner = parseHalfMessageInner(messageInner);
+        // DefaultMessageStore#putMessage
+        return store.putMessage(messageExtBrokerInner);
     }
 
     private MessageExtBrokerInner parseHalfMessageInner(MessageExtBrokerInner msgInner) {
+        // REAL_TOPIC=原始topic，REAL_QID=原始queueId
         MessageAccessor.putProperty(msgInner, MessageConst.PROPERTY_REAL_TOPIC, msgInner.getTopic());
         MessageAccessor.putProperty(msgInner, MessageConst.PROPERTY_REAL_QUEUE_ID,
             String.valueOf(msgInner.getQueueId()));
+        // 设置为非事务消息
         msgInner.setSysFlag(
             MessageSysFlag.resetTransactionValue(msgInner.getSysFlag(), MessageSysFlag.TRANSACTION_NOT_TYPE));
+        // 替换真实topic=RMQ_SYS_TRANS_HALF_TOPIC，queueId=0
         msgInner.setTopic(TransactionalMessageUtil.buildHalfTopic());
         msgInner.setQueueId(0);
         msgInner.setPropertiesString(MessageDecoder.messageProperties2String(msgInner.getProperties()));
@@ -208,6 +214,7 @@ public class TransactionalMessageBridge {
     }
 
     public boolean putOpMessage(MessageExt messageExt, String opType) {
+        // topic=RMQ_SYS_TRANS_HALF_TOPIC queueId=0
         MessageQueue messageQueue = new MessageQueue(messageExt.getTopic(),
             this.brokerController.getBrokerConfig().getBrokerName(), messageExt.getQueueId());
         if (TransactionalMessageUtil.REMOVETAG.equals(opType)) {
@@ -280,8 +287,8 @@ public class TransactionalMessageBridge {
         msgInner.setBornTimestamp(System.currentTimeMillis());
         msgInner.setBornHost(this.storeHost);
         msgInner.setStoreHost(this.storeHost);
-        msgInner.setWaitStoreMsgOK(false);
-        MessageClientIDSetter.setUniqID(msgInner);
+        msgInner.setWaitStoreMsgOK(false); // 异步刷盘
+        MessageClientIDSetter.setUniqID(msgInner); // 消息id
         return msgInner;
     }
 
@@ -303,12 +310,17 @@ public class TransactionalMessageBridge {
      * @return This method will always return true.
      */
     private boolean addRemoveTagInTransactionOp(MessageExt messageExt, MessageQueue messageQueue) {
+        // topic = RMQ_SYS_TRANS_OP_HALF_TOPIC
+        // tag = d
+        // body = HALF消息的逻辑offset
         Message message = new Message(TransactionalMessageUtil.buildOpTopic(), TransactionalMessageUtil.REMOVETAG,
             String.valueOf(messageExt.getQueueOffset()).getBytes(TransactionalMessageUtil.charset));
         writeOp(message, messageQueue);
         return true;
     }
 
+    // RMQ_SYS_TRANS_HALF_TOPIC 0 -> RMQ_SYS_TRANS_OP_HALF_TOPIC 0
+    // private final ConcurrentHashMap<MessageQueue, MessageQueue> opQueueMap = new ConcurrentHashMap<>();
     private void writeOp(Message message, MessageQueue mq) {
         MessageQueue opQueue;
         if (opQueueMap.containsKey(mq)) {

@@ -611,9 +611,9 @@ public class CommitLog {
         // S1:获取最后一个MappedFile
         MappedFile mappedFile = this.mappedFileQueue.getLastMappedFile();
 
-        // useReentrantLockWhenPutMessage=false 默认cas自旋锁 同步建议改true
-        // 异步刷盘快，自旋不会抢占太多cpu时间，可以减少线程上下文切换（同样会消耗cpu）
-        // 同步刷盘慢，ReentrantLock可以减少大量自旋带来的cpu消耗
+        // useReentrantLockWhenPutMessage=false 默认使用cas自旋锁 同步建议改true
+        // 异步刷盘（默认） 单线程   无锁竞争   自旋 false
+        // 同步刷盘       建议多线程 锁竞争   减少自旋带来的cpu消耗，使用ReentrantLock true
         putMessageLock.lock(); //spin or ReentrantLock ,depending on store config
 
         // S2:写消息到MappedFile

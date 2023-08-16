@@ -374,9 +374,10 @@ public class SendMessageProcessor extends AbstractSendMessageProcessor implement
                         + "] sending transaction message is forbidden");
                 return response;
             }
+            // 事务消息，走TransactionalMessageServiceImpl
             putMessageResult = this.brokerController.getTransactionalMessageService().prepareMessage(msgInner);
         } else {
-            // 底层
+            // 普通消息
             putMessageResult = this.brokerController.getMessageStore().putMessage(msgInner);
         }
 
