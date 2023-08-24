@@ -180,6 +180,7 @@ public class RouteInfoManager {
                     }
                 }
 
+                // 如果是slave发送过来的心跳，需要返回组内master的两个地址
                 if (MixAll.MASTER_ID/*0*/ != brokerId) {
                     String masterAddr = brokerData.getBrokerAddrs().get(MixAll.MASTER_ID);
                     if (masterAddr != null) {

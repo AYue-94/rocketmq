@@ -167,6 +167,8 @@ public class CommitLog {
     public void recoverNormally(long maxPhyOffsetOfConsumeQueue) {
         boolean checkCRCOnRecover = this.defaultMessageStore.getMessageStoreConfig().isCheckCRCOnRecover();
         final List<MappedFile> mappedFiles = this.mappedFileQueue.getMappedFiles();
+        // 1. 统计commitlog物理offset写到哪里
+        // 2. crc32校验
         if (!mappedFiles.isEmpty()) {
             // Began to recover from the last third file
             int index = mappedFiles.size() - 3;
@@ -214,6 +216,7 @@ public class CommitLog {
             this.mappedFileQueue.truncateDirtyFiles(processOffset);
 
             // Clear ConsumeQueue redundant data
+            // 3.consumequeue中对应commitlog的物理offset 超出 实际commitlog的最大物理offset 清理consumequeue，保证不超出commitlog
             if (maxPhyOffsetOfConsumeQueue >= processOffset) {
                 log.warn("maxPhyOffsetOfConsumeQueue({}) >= processOffset({}), truncate dirty logic files", maxPhyOffsetOfConsumeQueue, processOffset);
                 this.defaultMessageStore.truncateDirtyLogicFiles(processOffset);
@@ -433,6 +436,7 @@ public class CommitLog {
             MappedFile mappedFile = null;
             for (; index >= 0; index--) {
                 mappedFile = mappedFiles.get(index);
+                // 根据checkpoint中commitlog时间戳和consumequeue的时间戳对比，选择一个commitlog文件
                 if (this.isMappedFileMatchedRecover(mappedFile)) {
                     log.info("recover from this mapped file " + mappedFile.getFileName());
                     break;
@@ -533,6 +537,7 @@ public class CommitLog {
                 return true;
             }
         } else {
+            // 比较当前commitlog文件的第一个消息的存储时间，是否小于等于min(commitlog最大时间，consumequeue最大时间)
             if (storeTimestamp <= this.defaultMessageStore.getStoreCheckpoint().getMinTimestamp()) {
                 log.info("find check timestamp, {} {}",
                     storeTimestamp,

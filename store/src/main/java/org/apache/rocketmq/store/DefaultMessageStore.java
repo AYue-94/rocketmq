@@ -71,7 +71,6 @@ public class DefaultMessageStore implements MessageStore {
     // (*)CommitLog
     private final CommitLog commitLog;
     // 消费相关 ConsumeQueue
-    private final ConcurrentMap<String/* topic */, ConcurrentMap<Integer/* queueId */, ConsumeQueue>> consumeQueueTable;
     // 消费相关 ConsumeQueue刷盘
     private final FlushConsumeQueueService flushConsumeQueueService;
     // CommitLog清理服务
@@ -195,11 +194,14 @@ public class DefaultMessageStore implements MessageStore {
             result = result && this.loadConsumeQueue();
 
             if (result) {
+                // 加载checkpoint
                 this.storeCheckpoint =
                     new StoreCheckpoint(StorePathConfigHelper.getStoreCheckpoint(this.messageStoreConfig.getStorePathRootDir()));
 
+                // 加载IndexFile
                 this.indexService.load(lastExitOK);
 
+                // 恢复
                 this.recover(lastExitOK);
 
                 log.info("load over, and the max phy offset = {}", this.getMaxPhyOffset());
@@ -277,16 +279,20 @@ public class DefaultMessageStore implements MessageStore {
             this.recoverTopicQueueTable();
         }
 
+        // ha部分
         if (!messageStoreConfig.isEnableDLegerCommitLog()) {
             this.haService.start();
             this.handleScheduleMessageService(messageStoreConfig.getBrokerRole());
         }
 
+        // consumequeue刷盘线程
         this.flushConsumeQueueService.start();
+        // commitlog刷盘线程
         this.commitLog.start();
         this.storeStatsService.start();
-
+        // 创建abort文件
         this.createTempFile();
+        // commitlog和consumequeue清理 10s检测一次
         this.addScheduleTask();
         this.shutdown = false;
     }
@@ -1248,14 +1254,14 @@ public class DefaultMessageStore implements MessageStore {
     }
 
     private void addScheduleTask() {
-
-        this.scheduledExecutorService.scheduleAtFixedRate(new Runnable() {
-            @Override
-            public void run() {
-                DefaultMessageStore.this.cleanFilesPeriodically();
-            }
-        }, 1000 * 60, this.messageStoreConfig.getCleanResourceInterval(), TimeUnit.MILLISECONDS);
-
+        // commitlog和consumequeue清理 10s检测一次
+//        this.scheduledExecutorService.scheduleAtFixedRate(new Runnable() {
+//            @Override
+//            public void run() {
+//                DefaultMessageStore.this.cleanFilesPeriodically();
+//            }
+//        }, 1000 * 60, this.messageStoreConfig.getCleanResourceInterval(), TimeUnit.MILLISECONDS);
+        // commitlog和consumequeue文件异常检测 10min一次
         this.scheduledExecutorService.scheduleAtFixedRate(new Runnable() {
             @Override
             public void run() {
@@ -1355,14 +1361,17 @@ public class DefaultMessageStore implements MessageStore {
     }
 
     private void recover(final boolean lastExitOK) {
+        // 1. 恢复consumequeue
         long maxPhyOffsetOfConsumeQueue = this.recoverConsumeQueue();
 
+        // 2. 恢复commitlog
         if (lastExitOK) {
             this.commitLog.recoverNormally(maxPhyOffsetOfConsumeQueue);
         } else {
             this.commitLog.recoverAbnormally(maxPhyOffsetOfConsumeQueue);
         }
 
+        // 3. 修复内存topic-queueid-最大offset
         this.recoverTopicQueueTable();
     }
 
@@ -1384,6 +1393,8 @@ public class DefaultMessageStore implements MessageStore {
             map.put(queueId, consumeQueue);
         }
     }
+
+    private final ConcurrentMap<String/* topic */, ConcurrentMap<Integer/* queueId */, ConsumeQueue>> consumeQueueTable;
 
     private long recoverConsumeQueue() {
         long maxPhysicOffset = -1;

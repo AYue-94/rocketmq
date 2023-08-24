@@ -91,6 +91,7 @@ public class ConsumeQueue {
         final List<MappedFile> mappedFiles = this.mappedFileQueue.getMappedFiles();
         if (!mappedFiles.isEmpty()) {
 
+            // 只取最大的3个consumequeue文件
             int index = mappedFiles.size() - 3;
             if (index < 0)
                 index = 0;
@@ -98,9 +99,13 @@ public class ConsumeQueue {
             int mappedFileSizeLogics = this.mappedFileSize;
             MappedFile mappedFile = mappedFiles.get(index);
             ByteBuffer byteBuffer = mappedFile.sliceByteBuffer();
+            // consumequeue的物理offset进度
             long processOffset = mappedFile.getFileFromOffset();
             long mappedFileOffset = 0;
             long maxExtAddr = 1;
+            // 遍历consumequeue记录
+            // 1. 统计commitlog最大物理offset this.maxPhysicOffset
+            // 2. 统计consumequeue最大物理offset processOffset
             while (true) {
                 for (int i = 0; i < mappedFileSizeLogics; i += CQ_STORE_UNIT_SIZE) {
                     long offset = byteBuffer.getLong();

@@ -16,17 +16,18 @@
  */
 package org.apache.rocketmq.broker.slave;
 
-import java.io.IOException;
 import org.apache.rocketmq.broker.BrokerController;
 import org.apache.rocketmq.broker.subscription.SubscriptionGroupManager;
 import org.apache.rocketmq.common.MixAll;
 import org.apache.rocketmq.common.constant.LoggerName;
-import org.apache.rocketmq.logging.InternalLogger;
-import org.apache.rocketmq.logging.InternalLoggerFactory;
 import org.apache.rocketmq.common.protocol.body.ConsumerOffsetSerializeWrapper;
 import org.apache.rocketmq.common.protocol.body.SubscriptionGroupWrapper;
 import org.apache.rocketmq.common.protocol.body.TopicConfigSerializeWrapper;
+import org.apache.rocketmq.logging.InternalLogger;
+import org.apache.rocketmq.logging.InternalLoggerFactory;
 import org.apache.rocketmq.store.config.StorePathConfigHelper;
+
+import java.io.IOException;
 
 public class SlaveSynchronize {
     private static final InternalLogger log = InternalLoggerFactory.getLogger(LoggerName.BROKER_LOGGER_NAME);
@@ -46,18 +47,21 @@ public class SlaveSynchronize {
     }
 
     public void syncAll() {
-        this.syncTopicConfig();
-        this.syncConsumerOffset();
-        this.syncDelayOffset();
-        this.syncSubscriptionGroupConfig();
+        this.syncTopicConfig(); // topics.json
+        this.syncConsumerOffset(); // consumerOffset.json
+        this.syncDelayOffset(); // delayOffset.json
+        this.syncSubscriptionGroupConfig(); // subscriptionGroup.json
     }
 
     private void syncTopicConfig() {
         String masterAddrBak = this.masterAddr;
+        // slave心跳能拿到master地址
         if (masterAddrBak != null && !masterAddrBak.equals(brokerController.getBrokerAddr())) {
             try {
+                // 获取所有topic配置GET_ALL_TOPIC_CONFIG
                 TopicConfigSerializeWrapper topicWrapper =
                     this.brokerController.getBrokerOuterAPI().getAllTopicConfig(masterAddrBak);
+                // 如果topic配置发生变化，更新内存中的topic配置，并持久化
                 if (!this.brokerController.getTopicConfigManager().getDataVersion()
                     .equals(topicWrapper.getDataVersion())) {
 

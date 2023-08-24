@@ -16,17 +16,18 @@
  */
 package org.apache.rocketmq.store.ha;
 
-import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.nio.channels.SelectionKey;
-import java.nio.channels.Selector;
-import java.nio.channels.SocketChannel;
 import org.apache.rocketmq.common.ServiceThread;
 import org.apache.rocketmq.common.constant.LoggerName;
 import org.apache.rocketmq.logging.InternalLogger;
 import org.apache.rocketmq.logging.InternalLoggerFactory;
 import org.apache.rocketmq.remoting.common.RemotingUtil;
 import org.apache.rocketmq.store.SelectMappedBufferResult;
+
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.channels.SelectionKey;
+import java.nio.channels.Selector;
+import java.nio.channels.SocketChannel;
 
 public class HAConnection {
     private static final InternalLogger log = InternalLoggerFactory.getLogger(LoggerName.STORE_LOGGER_NAME);
@@ -291,6 +292,7 @@ public class HAConnection {
                         this.lastWriteOver = this.transferData();
                     } else {
 
+                        // 如果没有更多消息了，等待100ms/可被sync_master唤醒
                         HAConnection.this.haService.getWaitNotifyObject().allWaitForRunning(100);
                     }
                 } catch (Exception e) {

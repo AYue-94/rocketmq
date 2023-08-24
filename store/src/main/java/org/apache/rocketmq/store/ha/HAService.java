@@ -16,6 +16,14 @@
  */
 package org.apache.rocketmq.store.ha;
 
+import org.apache.rocketmq.common.ServiceThread;
+import org.apache.rocketmq.common.constant.LoggerName;
+import org.apache.rocketmq.logging.InternalLogger;
+import org.apache.rocketmq.logging.InternalLoggerFactory;
+import org.apache.rocketmq.remoting.common.RemotingUtil;
+import org.apache.rocketmq.store.CommitLog;
+import org.apache.rocketmq.store.DefaultMessageStore;
+
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
@@ -32,30 +40,30 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
-import org.apache.rocketmq.common.ServiceThread;
-import org.apache.rocketmq.common.constant.LoggerName;
-import org.apache.rocketmq.logging.InternalLogger;
-import org.apache.rocketmq.logging.InternalLoggerFactory;
-import org.apache.rocketmq.remoting.common.RemotingUtil;
-import org.apache.rocketmq.store.CommitLog;
-import org.apache.rocketmq.store.DefaultMessageStore;
 
 public class HAService {
     private static final InternalLogger log = InternalLoggerFactory.getLogger(LoggerName.STORE_LOGGER_NAME);
 
     private final AtomicInteger connectionCount = new AtomicInteger(0);
 
+    // master slave连接 每个HAConnection有read/write两个serviceThread
     private final List<HAConnection> connectionList = new LinkedList<>();
 
+    // master 接受slave连接 serviceThread
     private final AcceptSocketService acceptSocketService;
 
     private final DefaultMessageStore defaultMessageStore;
 
+    // master wait/notify
     private final WaitNotifyObject waitNotifyObject = new WaitNotifyObject();
+
+    // master 同步给所有slave中的最大offset
     private final AtomicLong push2SlaveMaxOffset = new AtomicLong(0);
 
+    // master sync_master专用 serviceThread
     private final GroupTransferService groupTransferService;
 
+    // slave slave客户端 serviceThread
     private final HAClient haClient;
 
     public HAService(final DefaultMessageStore defaultMessageStore) throws IOException {
@@ -81,7 +89,7 @@ public class HAService {
         result =
             result
                 && ((masterPutWhere - this.push2SlaveMaxOffset.get()) < this.defaultMessageStore
-                .getMessageStoreConfig().getHaSlaveFallbehindMax());
+                .getMessageStoreConfig().getHaSlaveFallbehindMax()); // 256M
         return result;
     }
 
@@ -107,9 +115,9 @@ public class HAService {
 
     public void start() throws Exception {
         this.acceptSocketService.beginAccept();
-        this.acceptSocketService.start();
+        this.acceptSocketService.start(); // master开启ha端口
         this.groupTransferService.start();
-        this.haClient.start();
+        this.haClient.start(); // slave连接master开始同步commitlog
     }
 
     public void addConnection(final HAConnection conn) {
@@ -157,7 +165,7 @@ public class HAService {
      * Listens to slave connections to create {@link HAConnection}.
      */
     class AcceptSocketService extends ServiceThread {
-        private final SocketAddress socketAddressListen;
+        private final SocketAddress socketAddressListen; // 10912
         private ServerSocketChannel serverSocketChannel;
         private Selector selector;
 
@@ -335,6 +343,7 @@ public class HAService {
 
         private long currentReportedOffset = 0;
         private int dispatchPosition = 0;
+        // 4MB
         private ByteBuffer byteBufferRead = ByteBuffer.allocate(READ_MAX_BUFFER_SIZE);
         private ByteBuffer byteBufferBackup = ByteBuffer.allocate(READ_MAX_BUFFER_SIZE);
 
@@ -432,6 +441,7 @@ public class HAService {
             return true;
         }
 
+        // 8byte物理offset + 4byte消息大小 + 消息
         private boolean dispatchReadRequest() {
             final int msgHeaderSize = 8 + 4; // phyoffset + size
             int readSocketPos = this.byteBufferRead.position();
@@ -439,9 +449,13 @@ public class HAService {
             while (true) {
                 int diff = this.byteBufferRead.position() - this.dispatchPosition;
                 if (diff >= msgHeaderSize) {
+                    // commitlog物理offset
                     long masterPhyOffset = this.byteBufferRead.getLong(this.dispatchPosition);
+                    // 消息大小
                     int bodySize = this.byteBufferRead.getInt(this.dispatchPosition + 8);
 
+                    // 校验slave当前commitlog的offset是否与master同步的offset一致
+                    // 如果不一致，返回false，与master断开连接，重新与master确认同步位点
                     long slavePhyOffset = HAService.this.defaultMessageStore.getMaxPhyOffset();
 
                     if (slavePhyOffset != 0) {
@@ -453,10 +467,12 @@ public class HAService {
                     }
 
                     if (diff >= (msgHeaderSize + bodySize)) {
+                        // 读消息
                         byte[] bodyData = new byte[bodySize];
                         this.byteBufferRead.position(this.dispatchPosition + msgHeaderSize);
                         this.byteBufferRead.get(bodyData);
 
+                        // 将消息写入commitlog对应物理offset位置
                         HAService.this.defaultMessageStore.appendToCommitLog(masterPhyOffset, bodyData);
 
                         this.byteBufferRead.position(readSocketPos);
@@ -552,15 +568,18 @@ public class HAService {
                 try {
                     if (this.connectMaster()) {
 
-                        if (this.isTimeToReportOffset()) {
+                        if (this.isTimeToReportOffset()) { // 5s
+                            // 汇报slave当前commitlog的最大offset
                             boolean result = this.reportSlaveMaxOffset(this.currentReportedOffset);
                             if (!result) {
                                 this.closeMaster();
                             }
                         }
 
+                        // 等待master回复
                         this.selector.select(1000);
 
+                        // 将master回复的消息，写入commitlog
                         boolean ok = this.processReadEvent();
                         if (!ok) {
                             this.closeMaster();

@@ -856,10 +856,12 @@ public class BrokerController {
     }
 
     public void start() throws Exception {
+        // messageStore
         if (this.messageStore != null) {
             this.messageStore.start();
         }
 
+        // broker服务端
         if (this.remotingServer != null) {
             this.remotingServer.start();
         }
@@ -871,15 +873,15 @@ public class BrokerController {
         if (this.fileWatchService != null) {
             this.fileWatchService.start();
         }
-
+        // broker作为客户端的netty client
         if (this.brokerOuterAPI != null) {
             this.brokerOuterAPI.start();
         }
-
+        // consumer长轮询处理
         if (this.pullRequestHoldService != null) {
             this.pullRequestHoldService.start();
         }
-
+        // 客户端心跳检测 120s超时
         if (this.clientHousekeepingService != null) {
             this.clientHousekeepingService.start();
         }
@@ -888,9 +890,13 @@ public class BrokerController {
             this.filterServerManager.start();
         }
 
+        // ha
         if (!messageStoreConfig.isEnableDLegerCommitLog()) {
+            // 只有master开启TransactionalMessageCheckService事务消息回查
             startProcessorByHa(messageStoreConfig.getBrokerRole());
+            // slave同步config相关
             handleSlaveSynchronize(messageStoreConfig.getBrokerRole());
+            // 向nameserver发送心跳
             this.registerBrokerAll(true, false, true);
         }
 
@@ -1145,6 +1151,7 @@ public class BrokerController {
                 slaveSyncFuture.cancel(false);
             }
             this.slaveSynchronize.setMasterAddr(null);
+            // 初始延迟3s，每10s同步一次
             slaveSyncFuture = this.scheduledExecutorService.scheduleAtFixedRate(new Runnable() {
                 @Override
                 public void run() {
