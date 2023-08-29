@@ -47,6 +47,7 @@ import java.util.Properties;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.apache.rocketmq.remoting.netty.TlsSystemConfig.TLS_ENABLE;
+import static org.apache.rocketmq.remoting.netty.TlsSystemConfig.TLS_SERVER_MODE;
 
 public class BrokerStartup {
     public static Properties properties = null;
@@ -55,10 +56,13 @@ public class BrokerStartup {
     public static InternalLogger log;
 
     public static void main(String[] args) {
-        System.setProperty(MixAll.ROCKETMQ_HOME_PROPERTY, "/Users/yuyue/projects/JavaProject/source/rocketmq-4.6.0/distribution");
+        System.setProperty(TLS_SERVER_MODE, "disabled");
+//        System.setProperty(MixAll.ROCKETMQ_HOME_PROPERTY, "/Users/yuyue/projects/JavaProject/source/rocketmq-4.6.0/distribution");
+        System.setProperty(MixAll.ROCKETMQ_HOME_PROPERTY, "/Users/yuyue/project/java/source/rocketmq-reading/distribution");
         if (args.length == 0) {
             // 单机
-            args = new String[]{"-c", "/Users/yuyue/projects/JavaProject/source/rocketmq-4.6.0/distribution/conf/broker.conf"};
+//            args = new String[]{"-c", "/Users/yuyue/projects/JavaProject/source/rocketmq-4.6.0/distribution/conf/broker.conf"};
+            args = new String[]{"-c", "/Users/yuyue/project/java/source/rocketmq-reading/distribution/conf/broker.conf"};
         }
         start(createBrokerController(args));
     }

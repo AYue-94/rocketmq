@@ -84,7 +84,7 @@ public class HAService {
         this.groupTransferService.putRequest(request);
     }
 
-    public boolean isSlaveOK(final long masterPutWhere) {
+    public boolean isSlaveOK(final long masterPutWhere/*master写入进度*/) {
         boolean result = this.connectionCount.get() > 0;
         result =
             result
@@ -290,6 +290,7 @@ public class HAService {
                         boolean transferOK = HAService.this.push2SlaveMaxOffset.get() >= req.getNextOffset();
                         long waitUntilWhen = HAService.this.defaultMessageStore.getSystemClock().now()
                             + HAService.this.defaultMessageStore.getMessageStoreConfig().getSyncFlushTimeout();
+                        // 超过5s，不再等待
                         while (!transferOK && HAService.this.defaultMessageStore.getSystemClock().now() < waitUntilWhen) {
                             this.notifyTransferObject.waitForRunning(1000);
                             transferOK = HAService.this.push2SlaveMaxOffset.get() >= req.getNextOffset();
@@ -299,6 +300,7 @@ public class HAService {
                             log.warn("transfer messsage to slave timeout, " + req.getNextOffset());
                         }
 
+                        // 唤醒写消息线程
                         req.wakeupCustomer(transferOK);
                     }
 
@@ -449,7 +451,7 @@ public class HAService {
             while (true) {
                 int diff = this.byteBufferRead.position() - this.dispatchPosition;
                 if (diff >= msgHeaderSize) {
-                    // commitlog物理offset
+                    // 同步commitlog的起始offset
                     long masterPhyOffset = this.byteBufferRead.getLong(this.dispatchPosition);
                     // 消息大小
                     int bodySize = this.byteBufferRead.getInt(this.dispatchPosition + 8);
@@ -478,6 +480,7 @@ public class HAService {
                         this.byteBufferRead.position(readSocketPos);
                         this.dispatchPosition += msgHeaderSize + bodySize;
 
+                        // 再次向master汇报同步进度
                         if (!reportSlaveMaxOffsetPlus()) {
                             return false;
                         }
@@ -513,6 +516,7 @@ public class HAService {
 
         private boolean connectMaster() throws ClosedChannelException {
             if (null == socketChannel) {
+                // slave发送心跳给nameserver，nameserver返回master的ha地址
                 String addr = this.masterAddress.get();
                 if (addr != null) {
 
@@ -525,6 +529,7 @@ public class HAService {
                     }
                 }
 
+                // slave当前commitlog物理offset 写pagecache进度
                 this.currentReportedOffset = HAService.this.defaultMessageStore.getMaxPhyOffset();
 
                 this.lastWriteTimestamp = System.currentTimeMillis();
@@ -566,10 +571,10 @@ public class HAService {
 
             while (!this.isStopped()) {
                 try {
+                    // 与master建立连接 socketChannel
                     if (this.connectMaster()) {
-
-                        if (this.isTimeToReportOffset()) { // 5s
-                            // 汇报slave当前commitlog的最大offset
+                        // 每隔5s 汇报同步进度
+                        if (this.isTimeToReportOffset()) {
                             boolean result = this.reportSlaveMaxOffset(this.currentReportedOffset);
                             if (!result) {
                                 this.closeMaster();
@@ -585,10 +590,12 @@ public class HAService {
                             this.closeMaster();
                         }
 
+                        // 如果同步进度更新，汇报一次
                         if (!reportSlaveMaxOffsetPlus()) {
                             continue;
                         }
 
+                        // 20s写master空闲
                         long interval =
                             HAService.this.getDefaultMessageStore().getSystemClock().now()
                                 - this.lastWriteTimestamp;

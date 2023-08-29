@@ -42,6 +42,8 @@ import java.io.InputStream;
 import java.util.Properties;
 import java.util.concurrent.Callable;
 
+import static org.apache.rocketmq.remoting.netty.TlsSystemConfig.TLS_SERVER_MODE;
+
 public class NamesrvStartup {
 
     private static InternalLogger log;
@@ -49,7 +51,9 @@ public class NamesrvStartup {
     private static CommandLine commandLine = null;
 
     public static void main(String[] args) {
-        System.setProperty(MixAll.ROCKETMQ_HOME_PROPERTY, "/Users/yuyue/projects/JavaProject/source/rocketmq-4.6.0/distribution");
+        System.setProperty(TLS_SERVER_MODE, "disabled");
+//        System.setProperty(MixAll.ROCKETMQ_HOME_PROPERTY, "/Users/yuyue/projects/JavaProject/source/rocketmq-4.6.0/distribution");
+        System.setProperty(MixAll.ROCKETMQ_HOME_PROPERTY, "/Users/yuyue/project/java/source/rocketmq-reading/distribution");
         main0(args);
     }
 

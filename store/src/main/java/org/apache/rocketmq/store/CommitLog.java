@@ -693,7 +693,7 @@ public class CommitLog {
         // S3:刷盘
         handleDiskFlush(result, putMessageResult, msg);
 
-        // S4:HA（以后讨论）
+        // S4:HA
         handleHA(result, putMessageResult, msg);
 
         return putMessageResult;
@@ -738,10 +738,11 @@ public class CommitLog {
             HAService service = this.defaultMessageStore.getHaService();
             if (messageExt.isWaitStoreMsgOK()) {
                 // Determine whether to wait
-                if (service.isSlaveOK(result.getWroteOffset() + result.getWroteBytes())) {
+                if (service.isSlaveOK(result.getWroteOffset() + result.getWroteBytes())) { // slave可用
                     GroupCommitRequest request = new GroupCommitRequest(result.getWroteOffset() + result.getWroteBytes());
-                    service.putRequest(request);
-                    service.getWaitNotifyObject().wakeupAll();
+                    service.putRequest(request); // 放入GroupTransferService
+                    service.getWaitNotifyObject().wakeupAll(); // 唤醒所有WriteSocketService
+                    // 等待slave同步，5s超时
                     boolean flushOK =
                         request.waitForFlush(this.defaultMessageStore.getMessageStoreConfig().getSyncFlushTimeout());
                     if (!flushOK) {
