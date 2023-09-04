@@ -1241,7 +1241,7 @@ public class BrokerController {
         log.info("Finish to change to master brokerName={}", brokerConfig.getBrokerName());
     }
 
-    private void startProcessorByHa(BrokerRole role) {
+    private void startProcessorByHa(BrokerRole role) { // master
         if (BrokerRole.SLAVE != role) {
             if (this.transactionalMessageCheckService != null) {
                 this.transactionalMessageCheckService.start();
@@ -1249,7 +1249,7 @@ public class BrokerController {
         }
     }
 
-    private void shutdownProcessorByHa() {
+    private void shutdownProcessorByHa() { // slave
         if (this.transactionalMessageCheckService != null) {
             this.transactionalMessageCheckService.shutdown(true);
         }

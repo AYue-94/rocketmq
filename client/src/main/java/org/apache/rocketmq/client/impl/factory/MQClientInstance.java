@@ -1052,6 +1052,16 @@ public class MQClientInstance {
         return null;
     }
 
+    // test only
+    void updateBrokerAddrTable(String brokerName, Long brokerId, String address) {
+        HashMap<Long, String> id2Addr = brokerAddrTable.get(brokerName);
+        if (id2Addr == null) {
+            id2Addr = new HashMap<Long, String>();
+            brokerAddrTable.put(brokerName, id2Addr);
+        }
+        id2Addr.put(brokerId, address);
+    }
+
     public FindBrokerResult findBrokerAddressInSubscribe(
         final String brokerName,
         final long brokerId,

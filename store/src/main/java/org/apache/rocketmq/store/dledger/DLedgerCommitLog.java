@@ -87,7 +87,9 @@ public class DLedgerCommitLog extends CommitLog {
         dLedgerFileStore = (DLedgerMmapFileStore) dLedgerServer.getdLedgerStore();
         DLedgerMmapFileStore.AppendHook appendHook = (entry, buffer, bodyOffset) -> {
             assert bodyOffset == DLedgerEntry.BODY_OFFSET;
+            // 定位到原生消息的物理offset字段
             buffer.position(buffer.position() + bodyOffset + MessageDecoder.PHY_POS_POSITION);
+            // 设置为raft日志项的起始位置+raft头
             buffer.putLong(entry.getPos() + bodyOffset);
         };
         dLedgerFileStore.addAppendHook(appendHook);
@@ -248,26 +250,28 @@ public class DLedgerCommitLog extends CommitLog {
     }
 
     private void recover(long maxPhyOffsetOfConsumeQueue) {
-        dLedgerFileStore.load();
-        if (dLedgerFileList.getMappedFiles().size() > 0) {
-            dLedgerFileStore.recover();
-            dividedCommitlogOffset = dLedgerFileList.getFirstMappedFile().getFileFromOffset();
+        dLedgerFileStore.load(); // 加载DLedger相关数据 mmap
+        if (dLedgerFileList.getMappedFiles().size() > 0) { // 存在DLedger commitlog
+            dLedgerFileStore.recover(); // 恢复相关内存数据
+            dividedCommitlogOffset = dLedgerFileList.getFirstMappedFile().getFileFromOffset(); // 分割点
             MappedFile mappedFile = this.mappedFileQueue.getLastMappedFile();
             if (mappedFile != null) {
                 disableDeleteDledger();
             }
             long maxPhyOffset = dLedgerFileList.getMaxWrotePosition();
             // Clear ConsumeQueue redundant data
-            if (maxPhyOffsetOfConsumeQueue >= maxPhyOffset) {
+            if (maxPhyOffsetOfConsumeQueue >= maxPhyOffset) { // consumequeue超出commitlog截断
                 log.warn("[TruncateCQ]maxPhyOffsetOfConsumeQueue({}) >= processOffset({}), truncate dirty logic files", maxPhyOffsetOfConsumeQueue, maxPhyOffset);
                 this.defaultMessageStore.truncateDirtyLogicFiles(maxPhyOffset);
             }
             return;
         }
+        // 首次启用DLedgerCommitLog，恢复原生commitlog...
+
         //Indicate that, it is the first time to load mixed commitlog, need to recover the old commitlog
         isInrecoveringOldCommitlog = true;
         //No need the abnormal recover
-        super.recoverNormally(maxPhyOffsetOfConsumeQueue);
+        super.recoverNormally(maxPhyOffsetOfConsumeQueue); // 恢复 原生commitlog
         isInrecoveringOldCommitlog = false;
         MappedFile mappedFile = this.mappedFileQueue.getLastMappedFile();
         if (mappedFile == null) {
@@ -334,9 +338,11 @@ public class DLedgerCommitLog extends CommitLog {
             if (magic == MmapFileList.BLANK_MAGIC_CODE) {
                 return new DispatchRequest(0, true);
             }
+            // 去除raft相关字段后，实际消息位置
             byteBuffer.position(pos + bodyOffset);
             DispatchRequest dispatchRequest = super.checkMessageAndReturnSize(byteBuffer, checkCRC, readBody);
             if (dispatchRequest.isSuccess()) {
+                // 原始消息大小 + raft头大小
                 dispatchRequest.setBufferSize(dispatchRequest.getMsgSize() + bodyOffset);
             } else if (dispatchRequest.getMsgSize() > 0) {
                 dispatchRequest.setBufferSize(dispatchRequest.getMsgSize() + bodyOffset);
@@ -403,21 +409,25 @@ public class DLedgerCommitLog extends CommitLog {
         putMessageLock.lock(); //spin or ReentrantLock ,depending on store config
         long elapsedTimeInLock;
         long queueOffset;
+        // 写日志
         try {
             beginTimeInDledgerLock = this.defaultMessageStore.getSystemClock().now();
+            // msg序列化 -> 普通commitlog格式
             encodeResult = this.messageSerializer.serialize(msg);
             queueOffset = topicQueueTable.get(encodeResult.queueOffsetKey);
             if (encodeResult.status != AppendMessageStatus.PUT_OK) {
                 return new PutMessageResult(PutMessageStatus.MESSAGE_ILLEGAL, new AppendMessageResult(encodeResult.status));
             }
             AppendEntryRequest request = new AppendEntryRequest();
-            request.setGroup(dLedgerConfig.getGroup());
-            request.setRemoteId(dLedgerServer.getMemberState().getSelfId());
-            request.setBody(encodeResult.data);
+            request.setGroup(dLedgerConfig.getGroup()); // raft组
+            request.setRemoteId(dLedgerServer.getMemberState().getSelfId()); // 当前raft实例id
+            request.setBody(encodeResult.data); // 序列化后的message
+            // 发送append请求
             dledgerFuture = (AppendFuture<AppendEntryResponse>) dLedgerServer.handleAppend(request);
             if (dledgerFuture.getPos() == -1) {
                 return new PutMessageResult(PutMessageStatus.OS_PAGECACHE_BUSY, new AppendMessageResult(AppendMessageStatus.UNKNOWN_ERROR));
             }
+            // 普通commitlog的物理offset起始位置
             long wroteOffset = dledgerFuture.getPos() + DLedgerEntry.BODY_OFFSET;
 
             int msgIdLength = (msg.getSysFlag() & MessageSysFlag.STOREHOSTADDRESS_V6_FLAG) == 0 ? 4 + 4 + 8 : 16 + 4 + 8;
@@ -452,6 +462,7 @@ public class DLedgerCommitLog extends CommitLog {
 
         PutMessageStatus putMessageStatus = PutMessageStatus.UNKNOWN_ERROR;
         try {
+            // 3s未收到过半ack，都算UNKNOWN_ERROR
             AppendEntryResponse appendEntryResponse = dledgerFuture.get(3, TimeUnit.SECONDS);
             switch (DLedgerResponseCode.valueOf(appendEntryResponse.getCode())) {
                 case SUCCESS:
@@ -490,8 +501,9 @@ public class DLedgerCommitLog extends CommitLog {
     }
 
     @Override
-    public SelectMappedBufferResult getMessage(final long offset, final int size) {
-        if (offset < dividedCommitlogOffset) {
+    public SelectMappedBufferResult getMessage(final long offset/*consumequeue中对应物理offset*/,
+                                               final int size) {
+        if (offset < dividedCommitlogOffset) { // 小于分界点，原生commitlog
             return super.getMessage(offset, size);
         }
         int mappedFileSize = this.dLedgerServer.getdLedgerConfig().getMappedFileSizeForEntryData();

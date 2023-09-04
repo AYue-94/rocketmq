@@ -68,9 +68,11 @@ public class DLedgerRoleChangeHandler implements DLedgerLeaderElector.RoleChange
                                     succ = false;
                                     break;
                                 }
+                                // 还没有任何commitlog
                                 if (dLegerServer.getdLedgerStore().getLedgerEndIndex() == -1) {
                                     break;
                                 }
+                                // 等待consumequeue追上commitlog
                                 if (dLegerServer.getdLedgerStore().getLedgerEndIndex() == dLegerServer.getdLedgerStore().getCommittedIndex()
                                     && messageStore.dispatchBehindBytes() == 0) {
                                     break;
@@ -78,6 +80,7 @@ public class DLedgerRoleChangeHandler implements DLedgerLeaderElector.RoleChange
                                 Thread.sleep(100);
                             }
                             if (succ) {
+                                // 恢复topic-queueId-offset
                                 messageStore.recoverTopicQueueTable();
                                 brokerController.changeToMaster(BrokerRole.SYNC_MASTER);
                             }

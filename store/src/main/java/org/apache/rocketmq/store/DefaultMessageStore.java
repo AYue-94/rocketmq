@@ -287,7 +287,7 @@ public class DefaultMessageStore implements MessageStore {
 
         // consumequeue刷盘线程
         this.flushConsumeQueueService.start();
-        // commitlog刷盘线程
+        // commitlog启动
         this.commitLog.start();
         this.storeStatsService.start();
         // 创建abort文件
