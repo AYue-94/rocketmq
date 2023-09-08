@@ -2191,7 +2191,7 @@ public class CommitLog implements Swappable {
                         log.info("windows os, coldDataCheckEnable force setting to be false");
                     }
                     log.info("initPageSize pageSize: {}", pageSize);
-                } catch (Exception e) {
+                } catch (Throwable e) { // catch link error (m2)
                     defaultMessageStore.getMessageStoreConfig().setColdDataFlowControlEnable(false);
                     log.error("initPageSize error, coldDataCheckEnable force setting to be false ", e);
                 }

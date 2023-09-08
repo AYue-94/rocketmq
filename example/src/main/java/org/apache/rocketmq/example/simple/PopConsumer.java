@@ -33,10 +33,12 @@ public class PopConsumer {
     public static final String TOPIC = "TopicTest";
     public static final String CONSUMER_GROUP = "CID_JODIE_1";
     public static void main(String[] args) throws Exception {
-        switchPop();
+//        switchPop();
         DefaultMQPushConsumer consumer = new DefaultMQPushConsumer(CONSUMER_GROUP);
+        consumer.setNamesrvAddr("localhost:9876");
         consumer.subscribe(TOPIC, "*");
         consumer.setConsumeFromWhere(ConsumeFromWhere.CONSUME_FROM_FIRST_OFFSET);
+        consumer.setMqClientApiTimeout(30 * 1000);
         consumer.registerMessageListener(new MessageListenerConcurrently() {
             @Override
             public ConsumeConcurrentlyStatus consumeMessage(List<MessageExt> msgs, ConsumeConcurrentlyContext context) {
@@ -50,6 +52,7 @@ public class PopConsumer {
     }
     private static void switchPop() throws Exception {
         DefaultMQAdminExt mqAdminExt = new DefaultMQAdminExt();
+        mqAdminExt.setNamesrvAddr("localhost:9876");
         mqAdminExt.start();
         List<BrokerData> brokerDatas = mqAdminExt.examineTopicRouteInfo(TOPIC).getBrokerDatas();
         for (BrokerData brokerData : brokerDatas) {
