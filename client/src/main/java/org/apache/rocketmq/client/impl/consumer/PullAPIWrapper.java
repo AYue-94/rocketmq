@@ -362,6 +362,7 @@ public class PullAPIWrapper {
     public void popAsync(MessageQueue mq, long invisibleTime, int maxNums, String consumerGroup,
                          long timeout, PopCallback popCallback, boolean poll, int initMode, boolean order, String expressionType, String expression)
         throws MQClientException, RemotingException, InterruptedException {
+        // 找broker，仅支持发送给master
         FindBrokerResult findBrokerResult = this.mQClientFactory.findBrokerAddressInSubscribe(mq.getBrokerName(), MixAll.MASTER_ID, true);
         if (null == findBrokerResult) {
             this.mQClientFactory.updateTopicRouteInfoFromNameServer(mq.getTopic());
@@ -369,22 +370,22 @@ public class PullAPIWrapper {
         }
         if (findBrokerResult != null) {
             PopMessageRequestHeader requestHeader = new PopMessageRequestHeader();
-            requestHeader.setConsumerGroup(consumerGroup);
-            requestHeader.setTopic(mq.getTopic());
-            requestHeader.setQueueId(mq.getQueueId());
-            requestHeader.setMaxMsgNums(maxNums);
-            requestHeader.setInvisibleTime(invisibleTime);
-            requestHeader.setInitMode(initMode);
-            requestHeader.setExpType(expressionType);
-            requestHeader.setExp(expression);
-            requestHeader.setOrder(order);
-            requestHeader.setBname(mq.getBrokerName());
+            requestHeader.setConsumerGroup(consumerGroup); // 消费组
+            requestHeader.setTopic(mq.getTopic()); // topic
+            requestHeader.setQueueId(mq.getQueueId()); // queueId
+            requestHeader.setMaxMsgNums(maxNums); // 最大消息数量 32
+            requestHeader.setInvisibleTime(invisibleTime); // 默认60s
+            requestHeader.setInitMode(initMode); // 默认MAX
+            requestHeader.setExpType(expressionType); // tag过滤
+            requestHeader.setExp(expression); // tag
+            requestHeader.setOrder(order); // false
+            requestHeader.setBname(mq.getBrokerName()); // broker名
             //give 1000 ms for server response
             if (poll) {
-                requestHeader.setPollTime(timeout);
-                requestHeader.setBornTime(System.currentTimeMillis());
+                requestHeader.setPollTime(timeout); // poll超时时间
+                requestHeader.setBornTime(System.currentTimeMillis()); // 请求创建时间
                 // timeout + 10s, fix the too earlier timeout of client when long polling.
-                timeout += 10 * 1000;
+                timeout += 10 * 1000; // 请求超时时间
             }
             String brokerAddr = findBrokerResult.getBrokerAddr();
             this.mQClientFactory.getMQClientAPIImpl().popMessageAsync(mq.getBrokerName(), brokerAddr, requestHeader, timeout, popCallback);

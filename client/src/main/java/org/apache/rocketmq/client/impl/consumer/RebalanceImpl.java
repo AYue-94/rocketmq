@@ -236,14 +236,16 @@ public abstract class RebalanceImpl {
 
     public boolean doRebalance(final boolean isOrder) {
         boolean balanced = true;
-        Map<String, SubscriptionData> subTable = this.getSubscriptionInner();
+        Map<String/*Topic*/, SubscriptionData> subTable = this.getSubscriptionInner();
         if (subTable != null) {
             for (final Map.Entry<String, SubscriptionData> entry : subTable.entrySet()) {
                 final String topic = entry.getKey();
                 try {
                     if (!clientRebalance(topic) && tryQueryAssignment(topic)) {
+                        // broker rebalance
                         balanced = this.getRebalanceResultFromBroker(topic, isOrder);
                     } else {
+                        // 客户端 rebalance
                         balanced = this.rebalanceByTopic(topic, isOrder);
                     }
                 } catch (Throwable e) {
@@ -261,10 +263,10 @@ public abstract class RebalanceImpl {
     }
 
     private boolean tryQueryAssignment(String topic) {
+        // 缓存
         if (topicClientRebalance.containsKey(topic)) {
             return false;
         }
-
         if (topicBrokerRebalance.containsKey(topic)) {
             return true;
         }
@@ -274,10 +276,10 @@ public abstract class RebalanceImpl {
             try {
                 Set<MessageQueueAssignment> resultSet = mQClientFactory.queryAssignment(topic, consumerGroup,
                     strategyName, messageModel, QUERY_ASSIGNMENT_TIMEOUT / TIMEOUT_CHECK_TIMES * retryTimes);
-                topicBrokerRebalance.put(topic, topic);
+                topicBrokerRebalance.put(topic, topic); // 执行queryAssignment成功，开启client rebalance
                 return true;
             } catch (Throwable t) {
-                if (!(t instanceof RemotingTimeoutException)) {
+                if (!(t instanceof RemotingTimeoutException)) { // 非timeout直接返回false
                     log.error("tryQueryAssignment error.", t);
                     topicClientRebalance.put(topic, topic);
                     return false;
@@ -377,6 +379,8 @@ public abstract class RebalanceImpl {
 
     private boolean getRebalanceResultFromBroker(final String topic, final boolean isOrder) {
         String strategyName = this.allocateMessageQueueStrategy.getName();
+
+        // 1. QUERY_ASSIGNMENT 查询broker分配给当前实例的queue
         Set<MessageQueueAssignment> messageQueueAssignments;
         try {
             messageQueueAssignments = this.mQClientFactory.queryAssignment(topic, consumerGroup,
@@ -397,6 +401,8 @@ public abstract class RebalanceImpl {
             }
         }
         Set<MessageQueue> mqAll = null;
+
+        // 2. 更新处理队列PopProcessQueue
         boolean changed = this.updateMessageQueueAssignment(topic, messageQueueAssignments, isOrder);
         if (changed) {
             log.info("broker rebalanced result changed. allocateMessageQueueStrategyName={}, group={}, topic={}, clientId={}, assignmentSet={}",
@@ -570,10 +576,9 @@ public abstract class RebalanceImpl {
             }
         }
 
-        if (!topic.startsWith(MixAll.RETRY_GROUP_TOPIC_PREFIX)) {
+        if (!topic.startsWith(MixAll.RETRY_GROUP_TOPIC_PREFIX)) { // 非%RETRY% topic
             if (mq2PopAssignment.isEmpty() && !mq2PushAssignment.isEmpty()) {
-                //pop switch to push
-                //subscribe pop retry topic
+                // 如果是push模式，订阅pop重试topic
                 try {
                     final String retryTopic = KeyBuilder.buildPopRetryTopic(topic, getConsumerGroup());
                     SubscriptionData subscriptionData = FilterAPI.buildSubscriptionData(retryTopic, SubscriptionData.SUB_ALL);
@@ -581,9 +586,9 @@ public abstract class RebalanceImpl {
                 } catch (Exception ignored) {
                 }
 
-            } else if (!mq2PopAssignment.isEmpty() && mq2PushAssignment.isEmpty()) {
-                //push switch to pop
-                //unsubscribe pop retry topic
+            }
+            else if (!mq2PopAssignment.isEmpty() && mq2PushAssignment.isEmpty()) {
+                // 如果是pop模式，【取消】订阅pop重试topic
                 try {
                     final String retryTopic = KeyBuilder.buildPopRetryTopic(topic, getConsumerGroup());
                     getSubscriptionInner().remove(retryTopic);
@@ -638,7 +643,7 @@ public abstract class RebalanceImpl {
                 if (mq.getTopic().equals(topic)) {
                     if (!mq2PopAssignment.containsKey(mq)) {
                         //the queue is no longer your assignment
-                        pq.setDropped(true);
+                        pq.setDropped(true); // 【标记drop】
                         removeQueueMap.put(mq, pq);
                     } else if (pq.isPullExpired() && this.consumeType() == ConsumeType.CONSUME_PASSIVELY) {
                         pq.setDropped(true);
@@ -654,7 +659,7 @@ public abstract class RebalanceImpl {
                 PopProcessQueue pq = entry.getValue();
 
                 if (this.removeUnnecessaryPopMessageQueue(mq, pq)) {
-                    this.popProcessQueueTable.remove(mq);
+                    this.popProcessQueueTable.remove(mq); // 【移除MessageQueue对应PopProcessQueue】
                     changed = true;
                     log.info("doRebalance, {}, remove unnecessary pop mq, {}", consumerGroup, mq);
                 }

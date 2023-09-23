@@ -198,16 +198,17 @@ public class AckMessageProcessor implements NettyRequestProcessor {
             return response;
         }
 
+        // 默认不开启
         if (this.brokerController.getPopMessageProcessor().getPopBufferMergeService().addAk(rqId, ackMsg)) {
             decInFlightMessageNum(requestHeader);
             return response;
         }
 
-        msgInner.setTopic(reviveTopic);
+        msgInner.setTopic(reviveTopic); // rmq_sys_REVIVE_LOG_{clusterName}
         msgInner.setBody(JSON.toJSONString(ackMsg).getBytes(DataConverter.charset));
         //msgInner.setQueueId(Integer.valueOf(extraInfo[3]));
-        msgInner.setQueueId(rqId);
-        msgInner.setTags(PopAckConstants.ACK_TAG);
+        msgInner.setQueueId(rqId); // checkpoint消息对应队列
+        msgInner.setTags(PopAckConstants.ACK_TAG); // tag=ack
         msgInner.setBornTimestamp(System.currentTimeMillis());
         msgInner.setBornHost(this.brokerController.getStoreHost());
         msgInner.setStoreHost(this.brokerController.getStoreHost());

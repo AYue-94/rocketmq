@@ -33,18 +33,19 @@ public class PopConsumer {
     public static final String TOPIC = "TopicTest";
     public static final String CONSUMER_GROUP = "CID_JODIE_1";
     public static void main(String[] args) throws Exception {
-        switchPop();
+//        switchPop();
         DefaultMQPushConsumer consumer = new DefaultMQPushConsumer(CONSUMER_GROUP);
+        consumer.setNamesrvAddr("localhost:9876");
         consumer.subscribe(TOPIC, "*");
-        consumer.setConsumeFromWhere(ConsumeFromWhere.CONSUME_FROM_FIRST_OFFSET);
+//        consumer.setConsumeFromWhere(ConsumeFromWhere.CONSUME_FROM_FIRST_OFFSET);
         consumer.registerMessageListener(new MessageListenerConcurrently() {
             @Override
             public ConsumeConcurrentlyStatus consumeMessage(List<MessageExt> msgs, ConsumeConcurrentlyContext context) {
                 System.out.printf("%s Receive New Messages: %s %n", Thread.currentThread().getName(), msgs);
-                return ConsumeConcurrentlyStatus.CONSUME_SUCCESS;
+                return ConsumeConcurrentlyStatus.RECONSUME_LATER;
             }
         });
-        consumer.setClientRebalance(false);
+        consumer.setClientRebalance(false); // 【开启POP消费】
         consumer.start();
         System.out.printf("Consumer Started.%n");
     }

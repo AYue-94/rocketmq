@@ -26,8 +26,11 @@ public class PopProcessQueue {
 
     private final static long PULL_MAX_IDLE_TIME = Long.parseLong(System.getProperty("rocketmq.client.pull.pullMaxIdleTime", "120000"));
 
+    // 上次发送pop请求的时间戳
     private long lastPopTimestamp;
+    // 已经拉到的消息 还未ack 的数量
     private AtomicInteger waitAckCounter = new AtomicInteger(0);
+    // 是否drop
     private volatile boolean dropped = false;
 
     public long getLastPopTimestamp() {

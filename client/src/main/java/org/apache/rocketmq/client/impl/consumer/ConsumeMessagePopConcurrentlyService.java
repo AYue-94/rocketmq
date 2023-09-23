@@ -245,31 +245,36 @@ public class ConsumeMessagePopConcurrentlyService implements ConsumeMessageServi
         //ack if consume success
         for (int i = 0; i <= ackIndex; i++) {
             this.defaultMQPushConsumerImpl.ackAsync(consumeRequest.getMsgs().get(i), consumerGroup);
-            consumeRequest.getPopProcessQueue().ack();
+            consumeRequest.getPopProcessQueue().ack(); // count--，metrics统计，流控
         }
 
         //consume later if consume fail
         for (int i = ackIndex + 1; i < consumeRequest.getMsgs().size(); i++) {
             MessageExt msgExt = consumeRequest.getMsgs().get(i);
             consumeRequest.getPopProcessQueue().ack();
+            // 超过16次
             if (msgExt.getReconsumeTimes() >= this.defaultMQPushConsumerImpl.getMaxReconsumeTimes()) {
                 checkNeedAckOrDelay(msgExt);
                 continue;
             }
 
+            // 未超过16次，changePopInvisibleTime
             int delayLevel = context.getDelayLevelWhenNextConsume();
             changePopInvisibleTime(consumeRequest.getMsgs().get(i), consumerGroup, delayLevel);
         }
     }
 
     private void checkNeedAckOrDelay(MessageExt msgExt) {
+        // 10s 30s 1m 2m 3m 4m 5m 6m 7m 8m 9m 10m 20m 30m 1h 2h
         int[] delayLevelTable = this.defaultMQPushConsumerImpl.getPopDelayLevel();
 
         long msgDelaytime = System.currentTimeMillis() - msgExt.getBornTimestamp();
+        // 距离消息发送时间，超出4h，直接ack
         if (msgDelaytime > delayLevelTable[delayLevelTable.length - 1] * 1000 * 2) {
             log.warn("Consume too many times, ack message async. message {}", msgExt.toString());
             this.defaultMQPushConsumerImpl.ackAsync(msgExt, consumerGroup);
         } else {
+            // 根据消息发送时间，定位延迟级别
             int delayLevel = delayLevelTable.length - 1;
             for (; delayLevel >= 0; delayLevel--) {
                 if (msgDelaytime >= delayLevelTable[delayLevel] * 1000) {
@@ -355,10 +360,10 @@ public class ConsumeMessagePopConcurrentlyService implements ConsumeMessageServi
             this.messageQueue = messageQueue;
 
             try {
-                String extraInfo = msgs.get(0).getProperty(MessageConst.PROPERTY_POP_CK);
+                String extraInfo = msgs.get(0).getProperty(MessageConst.PROPERTY_POP_CK); // checkpoint信息
                 String[] extraInfoStrs = ExtraInfoUtil.split(extraInfo);
-                popTime = ExtraInfoUtil.getPopTime(extraInfoStrs);
-                invisibleTime = ExtraInfoUtil.getInvisibleTime(extraInfoStrs);
+                popTime = ExtraInfoUtil.getPopTime(extraInfoStrs); // broker处理pop请求的时间戳
+                invisibleTime = ExtraInfoUtil.getInvisibleTime(extraInfoStrs); // consumer设置的invisibleTime
             } catch (Throwable t) {
                 log.error("parse extra info error. msg:" + msgs.get(0), t);
             }
@@ -383,11 +388,13 @@ public class ConsumeMessagePopConcurrentlyService implements ConsumeMessageServi
 
         @Override
         public void run() {
+            // rebalance导致队列被移除
             if (this.processQueue.isDropped()) {
                 log.info("the message queue not be able to consume, because it's dropped(pop). group={} {}", ConsumeMessagePopConcurrentlyService.this.consumerGroup, this.messageQueue);
                 return;
             }
 
+            // 如果pop超时，不消费
             if (isPopTimeout()) {
                 log.info("the pop message time out so abort consume. popTime={} invisibleTime={}, group={} {}",
                         popTime, invisibleTime, ConsumeMessagePopConcurrentlyService.this.consumerGroup, this.messageQueue);
@@ -421,6 +428,8 @@ public class ConsumeMessagePopConcurrentlyService implements ConsumeMessageServi
                         MessageAccessor.setConsumeStartTimeStamp(msg, String.valueOf(System.currentTimeMillis()));
                     }
                 }
+
+                // 执行用户代码
                 status = listener.consumeMessage(Collections.unmodifiableList(msgs), context);
             } catch (Throwable e) {
                 log.warn("consumeMessage exception: {} Group: {} Msgs: {} MQ: {}",
@@ -450,6 +459,7 @@ public class ConsumeMessagePopConcurrentlyService implements ConsumeMessageServi
                     ConsumeMessagePopConcurrentlyService.this.consumerGroup,
                     msgs,
                     messageQueue);
+                // 返回null，发生异常，都重试
                 status = ConsumeConcurrentlyStatus.RECONSUME_LATER;
             }
 
@@ -464,6 +474,7 @@ public class ConsumeMessagePopConcurrentlyService implements ConsumeMessageServi
                 .incConsumeRT(ConsumeMessagePopConcurrentlyService.this.consumerGroup, messageQueue.getTopic(), consumeRT);
 
             if (!processQueue.isDropped() && !isPopTimeout()) {
+                // 队列仍然属于自己，且非pop超时，才处理消费结果
                 ConsumeMessagePopConcurrentlyService.this.processConsumeResult(status, context, this);
             } else {
                 if (msgs != null) {

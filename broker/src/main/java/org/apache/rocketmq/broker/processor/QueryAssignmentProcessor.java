@@ -107,6 +107,7 @@ public class QueryAssignmentProcessor implements NettyRequestProcessor {
         final RemotingCommand response = RemotingCommand.createResponseCommand(null);
         final QueryAssignmentResponseBody responseBody = new QueryAssignmentResponseBody();
 
+        // 1. 确定MessageRequestMode
         SetMessageRequestModeRequestBody setMessageRequestModeRequestBody = this.messageRequestModeManager.getMessageRequestMode(topic, consumerGroup);
 
         if (setMessageRequestModeRequestBody == null) {
@@ -114,7 +115,7 @@ public class QueryAssignmentProcessor implements NettyRequestProcessor {
             setMessageRequestModeRequestBody.setTopic(topic);
             setMessageRequestModeRequestBody.setConsumerGroup(consumerGroup);
 
-            if (topic.startsWith(MixAll.RETRY_GROUP_TOPIC_PREFIX)) {
+            if (topic.startsWith(MixAll.RETRY_GROUP_TOPIC_PREFIX)) { // retry重试topic，保持原有分配逻辑
                 // retry topic must be pull mode
                 setMessageRequestModeRequestBody.setMode(MessageRequestMode.PULL);
             } else {
@@ -126,8 +127,10 @@ public class QueryAssignmentProcessor implements NettyRequestProcessor {
             }
         }
 
+        // 2. 分配queue
         Set<MessageQueue> messageQueues = doLoadBalance(topic, consumerGroup, clientId, messageModel, strategyName, setMessageRequestModeRequestBody, ctx);
 
+        // 3. 模型转换 MessageQueue -> MessageQueueAssignment
         Set<MessageQueueAssignment> assignments = null;
         if (messageQueues != null) {
             assignments = new HashSet<>();
@@ -174,6 +177,7 @@ public class QueryAssignmentProcessor implements NettyRequestProcessor {
                 break;
             }
             case CLUSTERING: {
+                // 1. topic下所有queue（所有broker）--- nameserver得到
                 Set<MessageQueue> mqSet = topicRouteInfoManager.getTopicSubscribeInfo(topic);
                 if (null == mqSet) {
                     if (!topic.startsWith(MixAll.RETRY_GROUP_TOPIC_PREFIX)) {
@@ -186,6 +190,7 @@ public class QueryAssignmentProcessor implements NettyRequestProcessor {
                     return mqSet;
                 }
 
+                // 2. 消费组内成员列表 --- consumer心跳得到
                 List<String> cidAll = null;
                 ConsumerGroupInfo consumerGroupInfo = this.brokerController.getConsumerManager().getConsumerGroupInfo(consumerGroup);
                 if (consumerGroupInfo != null) {
@@ -209,11 +214,13 @@ public class QueryAssignmentProcessor implements NettyRequestProcessor {
                         return null;
                     }
 
+                    // 3-1. pop模式分配
                     if (setMessageRequestModeRequestBody != null && setMessageRequestModeRequestBody.getMode() == MessageRequestMode.POP) {
                         allocateResult = allocate4Pop(allocateMessageQueueStrategy, consumerGroup, clientId, mqAll,
                             cidAll, setMessageRequestModeRequestBody.getPopShareQueueNum());
 
                     } else {
+                        // 3-2. pull模式分配 --- 老逻辑
                         allocateResult = allocateMessageQueueStrategy.allocate(consumerGroup, clientId, mqAll, cidAll);
                     }
                 } catch (Throwable e) {
@@ -239,6 +246,7 @@ public class QueryAssignmentProcessor implements NettyRequestProcessor {
 
         List<MessageQueue> allocateResult;
         if (popShareQueueNum <= 0 || popShareQueueNum >= cidAll.size() - 1) {
+            // 【case1】默认情况popShareQueueNum = -1，每个consumer分配所有queue
             //each client pop all messagequeue
             allocateResult = new ArrayList<>(mqAll.size());
             for (MessageQueue mq : mqAll) {
@@ -248,19 +256,20 @@ public class QueryAssignmentProcessor implements NettyRequestProcessor {
             }
 
         } else {
+            // 【case2】 consumer数量小于等于queue数量 一个consumer分配多个queue
             if (cidAll.size() <= mqAll.size()) {
                 //consumer working in pop mode could share the MessageQueues assigned to the N (N = popWorkGroupSize) consumer following it in the cid list
                 allocateResult = allocateMessageQueueStrategy.allocate(consumerGroup, clientId, mqAll, cidAll);
                 int index = cidAll.indexOf(clientId);
                 if (index >= 0) {
-                    for (int i = 1; i <= popShareQueueNum; i++) {
+                    for (int i = 1; i <= popShareQueueNum; i++) { // 根据popShareQueueNum执行多次strategy分配queue
                         index++;
                         index = index % cidAll.size();
                         List<MessageQueue> tmp = allocateMessageQueueStrategy.allocate(consumerGroup, cidAll.get(index), mqAll, cidAll);
                         allocateResult.addAll(tmp);
                     }
                 }
-            } else {
+            } else { // 【case3】consumer数量大于queue数量 一个consumer分配一个queue
                 //make sure each cid is assigned
                 allocateResult = allocate(consumerGroup, clientId, mqAll, cidAll);
             }

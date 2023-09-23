@@ -33,7 +33,7 @@ public class PopAckConstants {
     public static final String SPLIT = "@";
 
     /**
-     * Build cluster revive topic
+     * Build cluster revive topic rmq_sys_REVIVE_LOG_{clusterName}
      *
      * @param clusterName cluster name
      * @return revive topic

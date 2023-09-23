@@ -532,6 +532,7 @@ public class DefaultMQPushConsumerImpl implements MQConsumerInner {
 
         final long beginTimestamp = System.currentTimeMillis();
 
+        // public线程执行callback
         PopCallback popCallback = new PopCallback() {
             @Override
             public void onSuccess(PopResult popResult) {
@@ -540,7 +541,7 @@ public class DefaultMQPushConsumerImpl implements MQConsumerInner {
                     DefaultMQPushConsumerImpl.this.executePopPullRequestImmediately(popRequest);
                     return;
                 }
-
+                // tag精确过滤
                 processPopResult(popResult, subscriptionData);
 
                 switch (popResult.getPopStatus()) {
@@ -555,6 +556,7 @@ public class DefaultMQPushConsumerImpl implements MQConsumerInner {
                                 popRequest.getMessageQueue().getTopic(), popResult.getMsgFoundList().size());
                             popRequest.getPopProcessQueue().incFoundMsg(popResult.getMsgFoundList().size());
 
+                            // 提交ConsumeRequest
                             DefaultMQPushConsumerImpl.this.consumeMessagePopService.submitPopConsumeRequest(
                                 popResult.getMsgFoundList(),
                                 processQueue,
@@ -643,6 +645,7 @@ public class DefaultMQPushConsumerImpl implements MQConsumerInner {
                 }
             }
 
+            // 循环ack不匹配tag的消息
             if (msgFoundList.size() != msgListFilterAgain.size()) {
                 for (MessageExt msg : msgFoundList) {
                     if (!msgListFilterAgain.contains(msg)) {
@@ -651,6 +654,7 @@ public class DefaultMQPushConsumerImpl implements MQConsumerInner {
                 }
             }
 
+            // 返回tag过滤后的消息
             popResult.setMsgFoundList(msgListFilterAgain);
         }
 
@@ -811,9 +815,10 @@ public class DefaultMQPushConsumerImpl implements MQConsumerInner {
             requestHeader.setQueueId(queueId);
             requestHeader.setOffset(queueOffset);
             requestHeader.setConsumerGroup(consumerGroup);
-            requestHeader.setExtraInfo(extraInfo);
+            requestHeader.setExtraInfo(extraInfo); // checkpoint
             requestHeader.setBname(brokerName);
-            this.mQClientFactory.getMQClientAPIImpl().ackMessageAsync(findBrokerResult.getBrokerAddr(), ASYNC_TIMEOUT, new AckCallback() {
+            // master only
+            this.mQClientFactory.getMQClientAPIImpl().ackMessageAsync(findBrokerResult.getBrokerAddr(), ASYNC_TIMEOUT/*3s*/, new AckCallback() {
                 @Override
                 public void onSuccess(AckResult ackResult) {
                     if (ackResult != null && !AckStatus.OK.equals(ackResult.getStatus())) {
@@ -855,7 +860,7 @@ public class DefaultMQPushConsumerImpl implements MQConsumerInner {
             requestHeader.setOffset(ExtraInfoUtil.getQueueOffset(extraInfoStrs));
             requestHeader.setConsumerGroup(consumerGroup);
             requestHeader.setExtraInfo(extraInfo);
-            requestHeader.setInvisibleTime(invisibleTime);
+            requestHeader.setInvisibleTime(invisibleTime); // 根据delayLevel转换
             requestHeader.setBname(brokerName);
             //here the broker should be polished
             this.mQClientFactory.getMQClientAPIImpl().changeInvisibleTimeAsync(brokerName, findBrokerResult.getBrokerAddr(), requestHeader, ASYNC_TIMEOUT, callback);

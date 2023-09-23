@@ -65,12 +65,13 @@ public class PopReviveService extends ServiceThread {
 
     private int queueId;
     private BrokerController brokerController;
-    private String reviveTopic;
+    private String reviveTopic; // rmq_sys_REVIVE_LOG_{clusterName}
     private long currentReviveMessageTimestamp = -1;
     private volatile boolean shouldRunPopRevive = false;
 
-    private final NavigableMap<PopCheckPoint/* oldCK */, Pair<Long/* timestamp */, Boolean/* result */>> inflightReviveRequestMap = Collections.synchronizedNavigableMap(new TreeMap<>());
-    private long reviveOffset;
+    private final NavigableMap<PopCheckPoint/* oldCK */, Pair<Long/* timestamp */, Boolean/* result */>> inflightReviveRequestMap
+            = Collections.synchronizedNavigableMap(new TreeMap<>());
+    private long reviveOffset; // rmq_sys_REVIVE_LOG 消费进度
 
     public PopReviveService(BrokerController brokerController, String reviveTopic, int queueId) {
         this.queueId = queueId;
@@ -102,6 +103,7 @@ public class PopReviveService extends ServiceThread {
     private boolean reviveRetry(PopCheckPoint popCheckPoint, MessageExt messageExt) {
         MessageExtBrokerInner msgInner = new MessageExtBrokerInner();
         if (!popCheckPoint.getTopic().startsWith(MixAll.RETRY_GROUP_TOPIC_PREFIX)) {
+            // %RETRY%{group}_{topic}
             msgInner.setTopic(KeyBuilder.buildPopRetryTopic(popCheckPoint.getTopic(), popCheckPoint.getCId()));
         } else {
             msgInner.setTopic(popCheckPoint.getTopic());
@@ -430,6 +432,7 @@ public class PopReviveService extends ServiceThread {
     }
 
     protected void mergeAndRevive(ConsumeReviveObj consumeReviveObj) throws Throwable {
+        // 将checkpoint按照receive topic的offset排序
         ArrayList<PopCheckPoint> sortList = consumeReviveObj.genSortList();
         POP_LOGGER.info("reviveQueueId={},ck listSize={}", queueId, sortList.size());
         if (sortList.size() != 0) {
@@ -442,6 +445,7 @@ public class PopReviveService extends ServiceThread {
                 POP_LOGGER.info("slave skip ck process , revive topic={}, reviveQueueId={}", reviveTopic, queueId);
                 break;
             }
+            // 还未到达invisibleTime，不处理
             if (consumeReviveObj.endTime - popCheckPoint.getReviveTime() <= (PopAckConstants.ackTimeInterval + PopAckConstants.SECOND)) {
                 break;
             }
@@ -469,10 +473,12 @@ public class PopReviveService extends ServiceThread {
                 }
             }
 
+            // 重试
             reviveMsgFromCk(popCheckPoint);
 
             newOffset = popCheckPoint.getReviveOffset();
         }
+        // 提交receive topic的offset
         if (newOffset > consumeReviveObj.oldOffset) {
             if (!shouldRunPopRevive) {
                 POP_LOGGER.info("slave skip commit, revive topic={}, reviveQueueId={}", reviveTopic, queueId);
@@ -595,7 +601,7 @@ public class PopReviveService extends ServiceThread {
                     this.waitForRunning(1000);
                     continue;
                 }
-                this.waitForRunning(brokerController.getBrokerConfig().getReviveInterval());
+                this.waitForRunning(brokerController.getBrokerConfig().getReviveInterval()); // 1s跑一次
                 if (!shouldRunPopRevive) {
                     POP_LOGGER.info("skip start revive topic={}, reviveQueueId={}", reviveTopic, queueId);
                     continue;
@@ -608,6 +614,8 @@ public class PopReviveService extends ServiceThread {
 
                 POP_LOGGER.info("start revive topic={}, reviveQueueId={}", reviveTopic, queueId);
                 ConsumeReviveObj consumeReviveObj = new ConsumeReviveObj();
+
+                // step1 拉取receive消息，匹配ck和ack
                 consumeReviveMessage(consumeReviveObj);
 
                 if (!shouldRunPopRevive) {
@@ -615,6 +623,7 @@ public class PopReviveService extends ServiceThread {
                     continue;
                 }
 
+                // step2 对于超出invisibleTime的消息，重试，提交
                 mergeAndRevive(consumeReviveObj);
 
                 ArrayList<PopCheckPoint> sortList = consumeReviveObj.sortList;
@@ -645,10 +654,15 @@ public class PopReviveService extends ServiceThread {
     }
 
     static class ConsumeReviveObj {
+        // checkpoint唯一键 - checkpoint
         HashMap<String, PopCheckPoint> map = new HashMap<>();
+        // 根据receive topic消费进度排序的checkpoint
         ArrayList<PopCheckPoint> sortList;
+        // 本次批处理前的receive topic的消费进度
         long oldOffset;
+        // 本次批处理 最后一条receive消息 的 DeliverTimeMs = popTime + invisibleTime
         long endTime;
+        // 本次批处理后的receive topic的消费进度
         long newOffset;
 
         ArrayList<PopCheckPoint> genSortList() {

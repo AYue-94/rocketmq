@@ -43,8 +43,10 @@ import org.apache.rocketmq.store.pop.PopCheckPoint;
 
 public class PopBufferMergeService extends ServiceThread {
     private static final Logger POP_LOGGER = LoggerFactory.getLogger(LoggerName.ROCKETMQ_POP_LOGGER_NAME);
+    // topic+consumerGroup+queueId+起始消费进度+pop请求时间戳+broker名 -> checkpoint
     ConcurrentHashMap<String/*mergeKey*/, PopCheckPointWrapper>
         buffer = new ConcurrentHashMap<>(1024 * 16);
+    // topic+consumerGroup+queueId -> checkpoint(s)
     ConcurrentHashMap<String/*topic@cid@queueId*/, QueueWithTime<PopCheckPointWrapper>> commitOffsets =
         new ConcurrentHashMap<>();
     private volatile boolean serving = true;
@@ -88,22 +90,23 @@ public class PopBufferMergeService extends ServiceThread {
         // scan
         while (!this.isStopped()) {
             try {
-                if (!isShouldRunning()) {
+                if (!isShouldRunning()) { // slave不跑
                     // slave
                     this.waitForRunning(interval * 200 * 5);
                     POP_LOGGER.info("Broker is {}, {}, clear all data",
                         brokerController.getMessageStoreConfig().getBrokerRole(), this.master);
-                    this.buffer.clear();
-                    this.commitOffsets.clear();
+                    this.buffer.clear(); // slave清空缓存
+                    this.commitOffsets.clear(); // slave清空缓存
                     continue;
                 }
 
+                // 【关注】
                 scan();
                 if (scanTimes % countOfSecond30 == 0) {
                     scanGarbage();
                 }
 
-                this.waitForRunning(interval);
+                this.waitForRunning(interval); // 5ms
 
                 if (!this.serving && this.buffer.size() == 0 && getOffsetTotalSize() == 0) {
                     this.serving = true;
@@ -130,17 +133,15 @@ public class PopBufferMergeService extends ServiceThread {
     private int scanCommitOffset() {
         Iterator<Map.Entry<String, QueueWithTime<PopCheckPointWrapper>>> iterator = this.commitOffsets.entrySet().iterator();
         int count = 0;
-        while (iterator.hasNext()) {
+        while (iterator.hasNext()) { // 循环处理每个topic-group-queue
             Map.Entry<String, QueueWithTime<PopCheckPointWrapper>> entry = iterator.next();
             LinkedBlockingDeque<PopCheckPointWrapper> queue = entry.getValue().get();
             PopCheckPointWrapper pointWrapper;
             while ((pointWrapper = queue.peek()) != null) {
-                // 1. just offset & stored, not processed by scan
-                // 2. ck is buffer(acked)
-                // 3. ck is buffer(not all acked), all ak are stored and ck is stored
-                if (pointWrapper.isJustOffset() && pointWrapper.isCkStored() || isCkDone(pointWrapper)
-                    || isCkDoneForFinish(pointWrapper) && pointWrapper.isCkStored()) {
-                    if (commitOffset(pointWrapper)) {
+                if (pointWrapper.isJustOffset() && pointWrapper.isCkStored() // checkpoint存储成功
+                        || isCkDone(pointWrapper) // enablePopBufferMerge=true，收到ack
+                        || isCkDoneForFinish(pointWrapper) && pointWrapper.isCkStored()) { // 其他情况
+                    if (commitOffset(pointWrapper)) { // 尝试提交offset
                         queue.poll();
                     } else {
                         break;
@@ -213,18 +214,21 @@ public class PopBufferMergeService extends ServiceThread {
     private void scan() {
         long startTime = System.currentTimeMillis();
         int count = 0, countCk = 0;
+
+        // 【step1】扫描buffer
         Iterator<Map.Entry<String, PopCheckPointWrapper>> iterator = buffer.entrySet().iterator();
         while (iterator.hasNext()) {
             Map.Entry<String, PopCheckPointWrapper> entry = iterator.next();
             PopCheckPointWrapper pointWrapper = entry.getValue();
 
             // just process offset(already stored at pull thread), or buffer ck(not stored and ack finish)
-            if (pointWrapper.isJustOffset() && pointWrapper.isCkStored() || isCkDone(pointWrapper)
-                || isCkDoneForFinish(pointWrapper) && pointWrapper.isCkStored()) {
+            if (pointWrapper.isJustOffset() && pointWrapper.isCkStored() // 默认情况，checkpoint发送成功
+                    || isCkDone(pointWrapper) // 其他情况
+                    || isCkDoneForFinish(pointWrapper) && pointWrapper.isCkStored()) { // 其他情况
                 if (brokerController.getBrokerConfig().isEnablePopLog()) {
                     POP_LOGGER.info("[PopBuffer]ck done, {}", pointWrapper);
                 }
-                iterator.remove();
+                iterator.remove(); // buffer移除checkpoint
                 counter.decrementAndGet();
                 continue;
             }
@@ -290,6 +294,7 @@ public class PopBufferMergeService extends ServiceThread {
             }
         }
 
+        // 【step2】扫描commitOffsets
         int offsetBufferSize = scanCommitOffset();
 
         long eclipse = System.currentTimeMillis() - startTime;
@@ -351,7 +356,7 @@ public class PopBufferMergeService extends ServiceThread {
         final PopCheckPoint popCheckPoint = wrapper.getCk();
         final String lockKey = wrapper.getLockKey();
 
-        if (!queueLockManager.tryLock(lockKey)) {
+        if (!queueLockManager.tryLock(lockKey)) { // 同样必须先获取队列级别互斥锁，和pop请求处理互斥
             return false;
         }
         try {
@@ -364,6 +369,7 @@ public class PopBufferMergeService extends ServiceThread {
                 // maybe store offset is not correct.
                 POP_LOGGER.warn("Commit offset, consumer offset less than store, {}, {}", wrapper, offset);
             }
+            // 提交offset
             brokerController.getConsumerOffsetManager().commitOffset(getServiceName(),
                 popCheckPoint.getCId(), popCheckPoint.getTopic(), popCheckPoint.getQueueId(), wrapper.getNextBeginOffset());
         } finally {
@@ -403,11 +409,13 @@ public class PopBufferMergeService extends ServiceThread {
      * @return
      */
     public void addCkJustOffset(PopCheckPoint point, int reviveQueueId, long reviveQueueOffset, long nextBeginOffset) {
-        PopCheckPointWrapper pointWrapper = new PopCheckPointWrapper(reviveQueueId, reviveQueueOffset, point, nextBeginOffset, true);
-
+        PopCheckPointWrapper pointWrapper =
+                new PopCheckPointWrapper(reviveQueueId, reviveQueueOffset, point, nextBeginOffset, true);
+        // 存储CheckPoint
         this.putCkToStore(pointWrapper, !checkQueueOk(pointWrapper));
-
+        // 缓存 lockKey - LinkedBlockingDeque<checkpoint>
         putOffsetQueue(pointWrapper);
+        // 缓存 checkpoint的唯一键 - checkpoint
         this.buffer.put(pointWrapper.getMergeKey(), pointWrapper);
         this.counter.incrementAndGet();
         if (brokerController.getBrokerConfig().isEnablePopLog()) {
@@ -541,9 +549,10 @@ public class PopBufferMergeService extends ServiceThread {
     }
 
     private void putCkToStore(final PopCheckPointWrapper pointWrapper, final boolean runInCurrent) {
-        if (pointWrapper.getReviveQueueOffset() >= 0) {
+        if (pointWrapper.getReviveQueueOffset() >= 0) { // -1
             return;
         }
+        // 发送topic=rmq_sys_REVIVE_LOG_{clusterName} queueId=random(8) tag=ck body=PopCheckPoint
         MessageExtBrokerInner msgInner = popMessageProcessor.buildCkMsg(pointWrapper.getCk(), pointWrapper.getReviveQueueId());
         PutMessageResult putMessageResult = brokerController.getEscapeBridge().putMessageToSpecificQueue(msgInner);
         PopMetricsManager.incPopReviveCkPutCount(pointWrapper.getCk(), putMessageResult.getPutMessageStatus());

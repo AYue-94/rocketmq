@@ -51,6 +51,7 @@ public class NamesrvStartup {
     private static ControllerConfig controllerConfig = null;
 
     public static void main(String[] args) {
+        System.setProperty(MixAll.ROCKETMQ_HOME_PROPERTY, "/Users/yuyue/project/java/source/rocketmq-reading/distribution");
         main0(args);
         controllerManagerMain();
     }
