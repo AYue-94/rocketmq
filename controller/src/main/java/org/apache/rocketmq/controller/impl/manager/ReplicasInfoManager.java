@@ -16,17 +16,6 @@
  */
 package org.apache.rocketmq.controller.impl.manager;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.LinkedList;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
-
 import org.apache.commons.lang3.StringUtils;
 import org.apache.rocketmq.common.ControllerConfig;
 import org.apache.rocketmq.common.MixAll;
@@ -50,11 +39,11 @@ import org.apache.rocketmq.remoting.protocol.body.ElectMasterResponseBody;
 import org.apache.rocketmq.remoting.protocol.body.SyncStateSet;
 import org.apache.rocketmq.remoting.protocol.header.controller.AlterSyncStateSetRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.controller.AlterSyncStateSetResponseHeader;
-import org.apache.rocketmq.remoting.protocol.header.controller.admin.CleanControllerBrokerDataRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.controller.ElectMasterRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.controller.ElectMasterResponseHeader;
 import org.apache.rocketmq.remoting.protocol.header.controller.GetReplicaInfoRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.controller.GetReplicaInfoResponseHeader;
+import org.apache.rocketmq.remoting.protocol.header.controller.admin.CleanControllerBrokerDataRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.controller.register.ApplyBrokerIdRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.controller.register.ApplyBrokerIdResponseHeader;
 import org.apache.rocketmq.remoting.protocol.header.controller.register.GetNextBrokerIdRequestHeader;
@@ -62,10 +51,22 @@ import org.apache.rocketmq.remoting.protocol.header.controller.register.GetNextB
 import org.apache.rocketmq.remoting.protocol.header.controller.register.RegisterBrokerToControllerRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.controller.register.RegisterBrokerToControllerResponseHeader;
 
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
 
 /**
- * The manager that manages the replicas info for all brokers. We can think of this class as the controller's memory
- * state machine. If the upper layer want to update the statemachine, it must sequentially call its methods.
+ * The manager that manages the replicas info for all brokers.
+ * We can think of this class as the controller's memory state machine.
+ * If the upper layer want to update the statemachine, it must sequentially call its methods.
  */
 public class ReplicasInfoManager {
     private static final Logger LOGGER = LoggerFactory.getLogger(LoggerName.CONTROLLER_LOGGER_NAME);
@@ -435,15 +436,18 @@ public class ReplicasInfoManager {
 
     public List<String/*BrokerName*/> scanNeedReelectBrokerSets(final BrokerValidPredicate validPredicate) {
         List<String> needReelectBrokerSets = new LinkedList<>();
+        // 扫描SyncStateInfo
         this.syncStateSetInfoTable.forEach((brokerName, syncStateInfo) -> {
             Long masterBrokerId = syncStateInfo.getMasterBrokerId();
             String clusterName = syncStateInfo.getClusterName();
-            // Now master is inactive
+            // broker副本组中的master下线
             if (masterBrokerId != null && !validPredicate.check(clusterName, brokerName, masterBrokerId)) {
                 // Still at least one broker alive
                 Set<Long> brokerIds = this.replicaInfoTable.get(brokerName).getBrokerIdTable().keySet();
+                // 存在一个副本在线
                 boolean alive = brokerIds.stream().anyMatch(id -> validPredicate.check(clusterName, brokerName, id));
                 if (alive) {
+                    // brokerName加入结果集，需要重新选主
                     needReelectBrokerSets.add(brokerName);
                 }
             }

@@ -24,19 +24,6 @@ import io.openmessaging.storage.dledger.MemberState;
 import io.openmessaging.storage.dledger.protocol.AppendEntryRequest;
 import io.openmessaging.storage.dledger.protocol.AppendEntryResponse;
 import io.openmessaging.storage.dledger.protocol.BatchAppendEntryRequest;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.function.Supplier;
 import org.apache.rocketmq.common.ControllerConfig;
 import org.apache.rocketmq.common.ServiceThread;
 import org.apache.rocketmq.common.ThreadFactoryImpl;
@@ -61,13 +48,27 @@ import org.apache.rocketmq.remoting.protocol.RemotingCommand;
 import org.apache.rocketmq.remoting.protocol.ResponseCode;
 import org.apache.rocketmq.remoting.protocol.body.SyncStateSet;
 import org.apache.rocketmq.remoting.protocol.header.controller.AlterSyncStateSetRequestHeader;
-import org.apache.rocketmq.remoting.protocol.header.controller.admin.CleanControllerBrokerDataRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.controller.ElectMasterRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.controller.GetMetaDataResponseHeader;
 import org.apache.rocketmq.remoting.protocol.header.controller.GetReplicaInfoRequestHeader;
+import org.apache.rocketmq.remoting.protocol.header.controller.admin.CleanControllerBrokerDataRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.controller.register.ApplyBrokerIdRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.controller.register.GetNextBrokerIdRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.controller.register.RegisterBrokerToControllerRequestHeader;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
 
 /**
  * The implementation of controller, based on DLedger (raft).
@@ -75,23 +76,31 @@ import org.apache.rocketmq.remoting.protocol.header.controller.register.Register
 public class DLedgerController implements Controller {
 
     private static final Logger log = LoggerFactory.getLogger(LoggerName.CONTROLLER_LOGGER_NAME);
+    // dledger raft server
     private final DLedgerServer dLedgerServer;
     private final ControllerConfig controllerConfig;
     private final DLedgerConfig dLedgerConfig;
+    // broker副本管理
     private final ReplicasInfoManager replicasInfoManager;
+    // raft日志应用到内存的调度线程
     private final EventScheduler scheduler;
     private final EventSerializer eventSerializer;
+    // raft角色变更处理
     private final RoleChangeHandler roleHandler;
+    // 状态机 -> replicasInfoManager
     private final DLedgerControllerStateMachine statemachine;
     private final ScheduledExecutorService scanInactiveMasterService;
 
+    // 定时任务future 利用BrokerValidPredicate 扫描下线master broker 重新选主
     private ScheduledFuture scanInactiveMasterFuture;
 
     private List<BrokerLifecycleListener> brokerLifecycleListeners;
 
     // Usr for checking whether the broker is alive
+    // broker判活函数
     private BrokerValidPredicate brokerAlivePredicate;
     // use for elect a master
+    // broker选主策略
     private ElectPolicy electPolicy;
 
     private AtomicBoolean isScheduling = new AtomicBoolean(false);
@@ -244,6 +253,7 @@ public class DLedgerController implements Controller {
             cancelScanInactiveFuture();
             return;
         }
+        // 需要重新选主的副本组brokerName
         List<String> brokerSets = this.replicasInfoManager.scanNeedReelectBrokerSets(this.brokerAlivePredicate);
         for (String brokerName : brokerSets) {
             // Notify ControllerManager
@@ -476,14 +486,14 @@ public class DLedgerController implements Controller {
                     case CANDIDATE:
                         this.currentRole = MemberState.Role.CANDIDATE;
                         log.info("Controller {} change role to candidate", this.selfId);
-                        DLedgerController.this.stopScheduling();
-                        DLedgerController.this.cancelScanInactiveFuture();
+                        DLedgerController.this.stopScheduling(); // 关闭事件处理线程
+                        DLedgerController.this.cancelScanInactiveFuture(); // 关闭扫描broker定时任务
                         break;
                     case FOLLOWER:
                         this.currentRole = MemberState.Role.FOLLOWER;
                         log.info("Controller {} change role to Follower, leaderId:{}", this.selfId, getMemberState().getLeaderId());
-                        DLedgerController.this.stopScheduling();
-                        DLedgerController.this.cancelScanInactiveFuture();
+                        DLedgerController.this.stopScheduling(); // 关闭事件处理线程
+                        DLedgerController.this.cancelScanInactiveFuture(); // 关闭扫描broker定时任务
                         break;
                     case LEADER: {
                         log.info("Controller {} change role to leader, try process a initial proposal", this.selfId);
@@ -491,15 +501,18 @@ public class DLedgerController implements Controller {
                         // some committed logs have not been applied. Therefore, we must first process an empty request to DLedger,
                         // and after the request is committed, the controller can provide services(startScheduling).
                         int tryTimes = 0;
-                        while (true) {
+                        while (true) { // 持续重试，直到第一次raft写成功，或，自己已经不是master
                             final AppendEntryRequest request = new AppendEntryRequest();
                             request.setBody(new byte[0]);
                             try {
+                                // 先进行一次raft写，保证所有raft日志被应用到内存状态机
                                 if (appendToDLedgerAndWait(request)) {
                                     this.currentRole = MemberState.Role.LEADER;
+                                    // 事件处理线程
                                     DLedgerController.this.startScheduling();
                                     if (DLedgerController.this.scanInactiveMasterFuture == null) {
                                         long scanInactiveMasterInterval = DLedgerController.this.controllerConfig.getScanInactiveMasterInterval();
+                                        // 开启定时任务，每隔5s，扫描是否有master broker下线
                                         DLedgerController.this.scanInactiveMasterFuture =
                                                 DLedgerController.this.scanInactiveMasterService.scheduleAtFixedRate(DLedgerController.this::scanInactiveMasterAndTriggerReelect,
                                                         scanInactiveMasterInterval, scanInactiveMasterInterval, TimeUnit.MILLISECONDS);

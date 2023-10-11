@@ -22,11 +22,16 @@ public class BrokerLiveInfo {
     private final String brokerName;
 
     private String brokerAddr;
+    // 心跳超时时间
     private long heartbeatTimeoutMillis;
+    // netty channel
     private Channel channel;
+    // brokerControllerId
     private long brokerId;
+    // 上次心跳时间
     private long lastUpdateTimestamp;
     private int epoch;
+    // commitlog写进度
     private long maxOffset;
     private long confirmOffset;
     private Integer electionPriority;

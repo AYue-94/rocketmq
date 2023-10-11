@@ -17,6 +17,15 @@
 package org.apache.rocketmq.controller.impl.heartbeat;
 
 import io.netty.channel.Channel;
+import org.apache.rocketmq.common.ControllerConfig;
+import org.apache.rocketmq.common.ThreadFactoryImpl;
+import org.apache.rocketmq.common.constant.LoggerName;
+import org.apache.rocketmq.controller.BrokerHeartbeatManager;
+import org.apache.rocketmq.controller.helper.BrokerLifecycleListener;
+import org.apache.rocketmq.logging.org.slf4j.Logger;
+import org.apache.rocketmq.logging.org.slf4j.LoggerFactory;
+import org.apache.rocketmq.remoting.common.RemotingHelper;
+
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
@@ -27,23 +36,18 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
-import org.apache.rocketmq.common.ControllerConfig;
-import org.apache.rocketmq.common.ThreadFactoryImpl;
-import org.apache.rocketmq.common.constant.LoggerName;
-import org.apache.rocketmq.controller.BrokerHeartbeatManager;
-import org.apache.rocketmq.controller.helper.BrokerLifecycleListener;
-import org.apache.rocketmq.logging.org.slf4j.Logger;
-import org.apache.rocketmq.logging.org.slf4j.LoggerFactory;
-import org.apache.rocketmq.remoting.common.RemotingHelper;
 
 public class DefaultBrokerHeartbeatManager implements BrokerHeartbeatManager {
     private static final Logger log = LoggerFactory.getLogger(LoggerName.CONTROLLER_LOGGER_NAME);
     private static final long DEFAULT_BROKER_CHANNEL_EXPIRED_TIME = 1000 * 10;
+    // 心跳超时检测
     private ScheduledExecutorService scheduledService;
     private ExecutorService executor;
 
     private final ControllerConfig controllerConfig;
+    // cluster+brokerName+brokerControllerId -> broker心跳信息
     private final Map<BrokerIdentityInfo/* brokerIdentity*/, BrokerLiveInfo> brokerLiveTable;
+    // broker失活监听
     private final List<BrokerLifecycleListener> brokerLifecycleListeners;
 
     public DefaultBrokerHeartbeatManager(final ControllerConfig controllerConfig) {
@@ -69,6 +73,7 @@ public class DefaultBrokerHeartbeatManager implements BrokerHeartbeatManager {
         this.executor = Executors.newFixedThreadPool(2, new ThreadFactoryImpl("DefaultBrokerHeartbeatManager_executorService_"));
     }
 
+    // 每5s扫描所有心跳超时BrokerLiveInfo，关闭底层通讯channel，通知BrokerLifecycleListener
     public void scanNotActiveBroker() {
         try {
             log.info("start scanNotActiveBroker");
@@ -79,10 +84,12 @@ public class DefaultBrokerHeartbeatManager implements BrokerHeartbeatManager {
                 long timeoutMillis = next.getValue().getHeartbeatTimeoutMillis();
                 if (System.currentTimeMillis() - last > timeoutMillis) {
                     final Channel channel = next.getValue().getChannel();
-                    iterator.remove();
+                    iterator.remove(); // 移除BrokerLiveInfo
                     if (channel != null) {
+                        // 关闭底层通讯channel
                         RemotingHelper.closeChannel(channel);
                     }
+                    // org.apache.rocketmq.controller.ControllerManager.onBrokerInactive 可能触发broker选主
                     this.executor.submit(() ->
                         notifyBrokerInActive(next.getKey().getClusterName(), next.getValue().getBrokerName(), next.getValue().getBrokerId()));
                     log.warn("The broker channel {} expired, brokerInfo {}, expired {}ms", next.getValue().getChannel(), next.getKey(), timeoutMillis);
@@ -116,6 +123,7 @@ public class DefaultBrokerHeartbeatManager implements BrokerHeartbeatManager {
         long realTimeoutMillis = Optional.ofNullable(timeoutMillis).orElse(DEFAULT_BROKER_CHANNEL_EXPIRED_TIME);
         int realElectionPriority = Optional.ofNullable(electionPriority).orElse(Integer.MAX_VALUE);
         if (null == prev) {
+            // 写table
             this.brokerLiveTable.put(brokerIdentityInfo,
                 new BrokerLiveInfo(brokerName,
                     brokerAddr,
@@ -128,6 +136,7 @@ public class DefaultBrokerHeartbeatManager implements BrokerHeartbeatManager {
                     realElectionPriority));
             log.info("new broker registered, {}, brokerId:{}", brokerIdentityInfo, realBrokerId);
         } else {
+            // 更新table
             prev.setLastUpdateTimestamp(System.currentTimeMillis());
             prev.setHeartbeatTimeoutMillis(realTimeoutMillis);
             prev.setElectionPriority(realElectionPriority);

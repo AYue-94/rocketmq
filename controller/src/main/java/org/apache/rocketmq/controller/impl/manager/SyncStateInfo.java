@@ -27,11 +27,13 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class SyncStateInfo {
     private final String clusterName;
     private final String brokerName;
-    private final AtomicInteger masterEpoch;
-    private final AtomicInteger syncStateSetEpoch;
 
+    // syncStateSet
+    private final AtomicInteger syncStateSetEpoch;
     private Set<Long/*brokerId*/> syncStateSet;
 
+    // master
+    private final AtomicInteger masterEpoch;
     private Long masterBrokerId;
 
     public SyncStateInfo(String clusterName, String brokerName) {

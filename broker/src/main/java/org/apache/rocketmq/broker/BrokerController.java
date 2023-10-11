@@ -1625,7 +1625,7 @@ public class BrokerController {
                 }
 
             }
-        }, 1000, brokerConfig.getBrokerHeartbeatInterval(), TimeUnit.MILLISECONDS));
+        }, 1000, brokerConfig.getBrokerHeartbeatInterval()/*1s*/, TimeUnit.MILLISECONDS));
     }
 
     public synchronized void registerIncrementBrokerData(TopicConfig topicConfig, DataVersion dataVersion) {

@@ -60,9 +60,12 @@ import org.apache.rocketmq.store.ha.autoswitch.TempBrokerMetadata;
 import static org.apache.rocketmq.remoting.protocol.ResponseCode.CONTROLLER_BROKER_METADATA_NOT_EXIST;
 
 /**
- * The manager of broker replicas, including: 0.regularly syncing controller metadata, change controller leader address,
- * both master and slave will start this timed task. 1.regularly syncing metadata from controllers, and changing broker
- * roles and master if needed, both master and slave will start this timed task. 2.regularly expanding and Shrinking
+ * The manager of broker replicas, including:
+ * 0.regularly syncing controller metadata, change controller leader address,
+ * both master and slave will start this timed task.
+ * 1.regularly syncing metadata from controllers, and changing broker
+ * roles and master if needed, both master and slave will start this timed task.
+ * 2.regularly expanding and Shrinking
  * syncStateSet, only master will start this timed task.
  */
 public class ReplicasManager {
@@ -137,12 +140,16 @@ public class ReplicasManager {
 
     public void start() {
         this.state = State.INITIAL;
+        // 从配置文件获取controller地址列表
         updateControllerAddr();
+        // 与所有controller建立连接
         scanAvailableControllerAddresses();
         this.scheduledService.scheduleAtFixedRate(this::updateControllerAddr, 2 * 60 * 1000, 2 * 60 * 1000, TimeUnit.MILLISECONDS);
         this.scheduledService.scheduleAtFixedRate(this::scanAvailableControllerAddresses, 3 * 1000, 3 * 1000, TimeUnit.MILLISECONDS);
+        // 开启基础服务
         if (!startBasicService()) {
             LOGGER.error("Failed to start replicasManager");
+            // 开启基础服务失败，每隔5s执行重试
             this.executorService.submit(() -> {
                 int retryTimes = 0;
                 do {
@@ -165,6 +172,7 @@ public class ReplicasManager {
         if (this.state == State.SHUTDOWN)
             return false;
         if (this.state == State.INITIAL) {
+            // 1. 【CONTROLLER_GET_METADATA_INFO】 从某个controller获取目前的master controller
             if (schedulingSyncControllerMetadata()) {
                 this.state = State.FIRST_TIME_SYNC_CONTROLLER_METADATA_DONE;
                 LOGGER.info("First time sync controller metadata success, change state to: {}", this.state);
@@ -175,6 +183,7 @@ public class ReplicasManager {
 
         if (this.state == State.FIRST_TIME_SYNC_CONTROLLER_METADATA_DONE) {
             for (int retryTimes = 0; retryTimes < 5; retryTimes++) {
+                // 2. 【CONTROLLER_REGISTER_BROKER】 向master controller注册
                 if (register()) {
                     this.state = State.REGISTER_TO_CONTROLLER_DONE;
                     LOGGER.info("First time register broker success, change state to: {}", this.state);
@@ -197,7 +206,9 @@ public class ReplicasManager {
 
         if (this.state == State.REGISTER_TO_CONTROLLER_DONE) {
             // The scheduled task for heartbeat sending is not starting now, so we should manually send heartbeat request
+            // 3. 【BROKER_HEARTBEAT】向所有controller发送心跳
             this.sendHeartbeatToController();
+            // 4. 【CONTROLLER_ELECT_MASTER】向master controller发送请求 选broker master
             if (this.masterBrokerId != null || brokerElect()) {
                 LOGGER.info("Master in this broker set is elected, masterBrokerId: {}, masterBrokerAddr: {}", this.masterBrokerId, this.masterAddress);
                 this.state = State.RUNNING;
@@ -208,6 +219,7 @@ public class ReplicasManager {
             }
         }
 
+        // 5. 【CONTROLLER_GET_REPLICA_INFO】每5s 获取broker元数据（当前master broker和SyncStateSet）
         schedulingSyncBrokerMetadata();
 
         // Register syncStateSet changed listener.
@@ -270,6 +282,7 @@ public class ReplicasManager {
                 this.masterAddress = this.brokerAddress;
                 this.masterBrokerId = this.brokerControllerId;
 
+                // 维护SyncStateSet
                 schedulingCheckSyncStateSet();
 
                 this.brokerController.getTopicConfigManager().getDataVersion().nextVersion(newMasterEpoch);
@@ -642,6 +655,7 @@ public class ReplicasManager {
     private void schedulingSyncBrokerMetadata() {
         this.scheduledService.scheduleAtFixedRate(() -> {
             try {
+                // CONTROLLER_GET_REPLICA_INFO 获取broker组的SyncStateSet信息
                 final Pair<GetReplicaInfoResponseHeader, SyncStateSet> result = this.brokerOuterAPI.getReplicaInfo(this.controllerLeaderAddress, this.brokerConfig.getBrokerName());
                 final GetReplicaInfoResponseHeader info = result.getObject1();
                 final SyncStateSet syncStateSet = result.getObject2();
