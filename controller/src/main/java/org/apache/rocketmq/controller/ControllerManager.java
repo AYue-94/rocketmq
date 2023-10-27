@@ -134,11 +134,13 @@ public class ControllerManager {
      */
     private void onBrokerInactive(String clusterName, String brokerName, Long brokerId) {
         if (controller.isLeaderState()) {
+            // case1 DLedgerController扫描 master-broker下线 直接重新选举
             if (brokerId == null) {
                 // Means that force triggering election for this broker-set
                 triggerElectMaster(brokerName);
                 return;
             }
+            // case2 DefaultBrokerHeartbeatManager扫描 broker心跳超时下线 需要判一下是否是master
             final CompletableFuture<RemotingCommand> replicaInfoFuture = controller.getReplicaInfo(new GetReplicaInfoRequestHeader(brokerName));
             replicaInfoFuture.whenCompleteAsync((replicaInfoResponse, err) -> {
                 if (err != null || replicaInfoResponse == null) {
@@ -160,6 +162,7 @@ public class ControllerManager {
     }
 
     private void triggerElectMaster(String brokerName) {
+        // 1. 选主
         final CompletableFuture<RemotingCommand> electMasterFuture = controller.electMaster(ElectMasterRequestHeader.ofControllerTrigger(brokerName));
         electMasterFuture.whenCompleteAsync((electMasterResponse, err) -> {
             if (err != null || electMasterResponse == null) {
@@ -169,6 +172,7 @@ public class ControllerManager {
             if (electMasterResponse.getCode() == ResponseCode.SUCCESS) {
                 log.info("Elect a new master in broker-set: {} done, result: {}", brokerName, electMasterResponse);
                 if (controllerConfig.isNotifyBrokerRoleChanged()) {
+                    // 2. 通知组内其他broker
                     notifyBrokerRoleChanged(RoleChangeNotifyEntry.convert(electMasterResponse));
                 }
             }
@@ -203,7 +207,8 @@ public class ControllerManager {
     public void doNotifyBrokerRoleChanged(final String brokerAddr, final RoleChangeNotifyEntry entry) {
         if (StringUtils.isNoneEmpty(brokerAddr)) {
             log.info("Try notify broker {} that role changed, RoleChangeNotifyEntry:{}", brokerAddr, entry);
-            final NotifyBrokerRoleChangedRequestHeader requestHeader = new NotifyBrokerRoleChangedRequestHeader(entry.getMasterAddress(), entry.getMasterBrokerId(),
+            final NotifyBrokerRoleChangedRequestHeader requestHeader =
+                    new NotifyBrokerRoleChangedRequestHeader(entry.getMasterAddress(), entry.getMasterBrokerId(),
                     entry.getMasterEpoch(), entry.getSyncStateSetEpoch());
             final RemotingCommand request = RemotingCommand.createRequestCommand(RequestCode.NOTIFY_BROKER_ROLE_CHANGED, requestHeader);
             request.setBody(new SyncStateSet(entry.getSyncStateSet(), entry.getSyncStateSetEpoch()).encode());

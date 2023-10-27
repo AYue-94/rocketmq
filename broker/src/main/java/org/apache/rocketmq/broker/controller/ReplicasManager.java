@@ -17,22 +17,6 @@
 
 package org.apache.rocketmq.broker.controller;
 
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Random;
-import java.util.Set;
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
-
 import org.apache.commons.lang3.StringUtils;
 import org.apache.rocketmq.broker.BrokerController;
 import org.apache.rocketmq.broker.out.BrokerOuterAPI;
@@ -57,6 +41,22 @@ import org.apache.rocketmq.store.ha.autoswitch.AutoSwitchHAService;
 import org.apache.rocketmq.store.ha.autoswitch.BrokerMetadata;
 import org.apache.rocketmq.store.ha.autoswitch.TempBrokerMetadata;
 
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Random;
+import java.util.Set;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+
 import static org.apache.rocketmq.remoting.protocol.ResponseCode.CONTROLLER_BROKER_METADATA_NOT_EXIST;
 
 /**
@@ -77,31 +77,41 @@ public class ReplicasManager {
     private final ExecutorService executorService;
     private final ExecutorService scanExecutor;
     private final BrokerController brokerController;
+    // controller模式下的ha服务
     private final AutoSwitchHAService haService;
     private final BrokerConfig brokerConfig;
     private final String brokerAddress;
     private final BrokerOuterAPI brokerOuterAPI;
+
+    // controller地址
     private List<String> controllerAddresses;
     private final ConcurrentMap<String, Boolean> availableControllerAddresses;
-
     private volatile String controllerLeaderAddress = "";
-    private volatile State state = State.INITIAL;
 
+    // ReplicasManager状态
+    private volatile State state = State.INITIAL;
+    // replica注册状态
     private volatile RegisterState registerState = RegisterState.INITIAL;
 
     private ScheduledFuture<?> checkSyncStateSetTaskFuture;
     private ScheduledFuture<?> slaveSyncFuture;
 
+    // 当前broker在controller侧的id
     private Long brokerControllerId;
 
+    // 组内成为master的brokerControllerId
     private Long masterBrokerId;
 
+    // broker的唯一标识
     private BrokerMetadata brokerMetadata;
 
     private TempBrokerMetadata tempBrokerMetadata;
 
+    // syncStateSet
     private Set<Long> syncStateSet;
     private int syncStateSetEpoch = 0;
+
+    // master broker地址
     private String masterAddress = "";
     private int masterEpoch = 0;
     private long lastSyncTimeMs = System.currentTimeMillis();
@@ -171,6 +181,7 @@ public class ReplicasManager {
     private boolean startBasicService() {
         if (this.state == State.SHUTDOWN)
             return false;
+        // Step1 确定 master controller
         if (this.state == State.INITIAL) {
             // 1. 【CONTROLLER_GET_METADATA_INFO】 从某个controller获取目前的master controller
             if (schedulingSyncControllerMetadata()) {
@@ -181,6 +192,7 @@ public class ReplicasManager {
             }
         }
 
+        // Step2 向master controller注册
         if (this.state == State.FIRST_TIME_SYNC_CONTROLLER_METADATA_DONE) {
             for (int retryTimes = 0; retryTimes < 5; retryTimes++) {
                 // 2. 【CONTROLLER_REGISTER_BROKER】 向master controller注册
@@ -204,6 +216,7 @@ public class ReplicasManager {
             }
         }
 
+        // Step3 broker组选主 --- 正式上线
         if (this.state == State.REGISTER_TO_CONTROLLER_DONE) {
             // The scheduled task for heartbeat sending is not starting now, so we should manually send heartbeat request
             // 3. 【BROKER_HEARTBEAT】向所有controller发送心跳
@@ -219,10 +232,10 @@ public class ReplicasManager {
             }
         }
 
-        // 5. 【CONTROLLER_GET_REPLICA_INFO】每5s 获取broker元数据（当前master broker和SyncStateSet）
+        // 开启定时任务 每5s 从 master controller 获取broker元数据【CONTROLLER_GET_REPLICA_INFO】
         schedulingSyncBrokerMetadata();
 
-        // Register syncStateSet changed listener.
+        // 向 AutoSwitchHAService 注册监听 当syncStateSet变化 通知controller
         this.haService.registerSyncStateSetChangedListener(this::doReportSyncStateSetChanged);
         return true;
     }
@@ -238,10 +251,13 @@ public class ReplicasManager {
     public synchronized void changeBrokerRole(final Long newMasterBrokerId, final String newMasterAddress,
         final Integer newMasterEpoch,
         final Integer syncStateSetEpoch, final Set<Long> syncStateSet) {
+        // epoch校验
         if (newMasterBrokerId != null && newMasterEpoch > this.masterEpoch) {
             if (newMasterBrokerId.equals(this.brokerControllerId)) {
+                // 自己是master
                 changeToMaster(newMasterEpoch, syncStateSetEpoch, syncStateSet);
             } else {
+                // 自己是slave
                 changeToSlave(newMasterAddress, newMasterEpoch, newMasterBrokerId);
             }
         }
@@ -263,30 +279,27 @@ public class ReplicasManager {
                     registerBrokerWhenRoleChange();
                     return;
                 }
-
-                // Change SyncStateSet
+                // 1. 更新内存SyncStateSet
                 final HashSet<Long> newSyncStateSet = new HashSet<>(syncStateSet);
                 changeSyncStateSet(newSyncStateSet, syncStateSetEpoch);
-
-                // Handle the slave synchronise
+                // 2. 关闭定时拉取config目录下数据，如消费进度
                 handleSlaveSynchronize(BrokerRole.SYNC_MASTER);
-
-                // Notify ha service, change to master
+                // 3. haService处理
                 this.haService.changeToMaster(newMasterEpoch);
-
+                // 4. broker角色变更
                 this.brokerController.getBrokerConfig().setBrokerId(MixAll.MASTER_ID);
                 this.brokerController.getMessageStoreConfig().setBrokerRole(BrokerRole.SYNC_MASTER);
+                // 5. 开启特殊消息调度，比如延迟消息、事务消息回查检查、pop消息处理
                 this.brokerController.changeSpecialServiceStatus(true);
-
-                // Change record
+                // 6. 更新内存master地址和id
                 this.masterAddress = this.brokerAddress;
                 this.masterBrokerId = this.brokerControllerId;
-
-                // 维护SyncStateSet
+                // 7. 向controller定时汇报SyncStateSet
                 schedulingCheckSyncStateSet();
-
+                // 8. topic配置版本更新为新epoch
                 this.brokerController.getTopicConfigManager().getDataVersion().nextVersion(newMasterEpoch);
                 this.executorService.submit(this::checkSyncStateSetAndDoReport);
+                // 9. 向所有nameserver发送注册请求
                 registerBrokerWhenRoleChange();
             }
         }
@@ -308,25 +321,35 @@ public class ReplicasManager {
                 }
 
                 // Stop checking syncStateSet because only master is able to check
+                // 1. 停止syncStateSet上报
                 stopCheckSyncStateSet();
 
                 // Change config(compatibility problem)
+                // 2. 修改broker角色
                 this.brokerController.getMessageStoreConfig().setBrokerRole(BrokerRole.SLAVE);
+
+                // 3. 停止特殊消息调度，比如延迟消息、事务消息回查检查、pop消息处理
                 this.brokerController.changeSpecialServiceStatus(false);
                 // The brokerId in brokerConfig just means its role(master[0] or slave[>=1])
+
+                // 4. 将controller分配给broker的id作为brokerId 向nameserver注册
                 this.brokerConfig.setBrokerId(brokerControllerId);
 
                 // Change record
+                // 5. 更新master信息
                 this.masterAddress = newMasterAddress;
                 this.masterBrokerId = newMasterBrokerId;
 
                 // Handle the slave synchronise
+                // 6. 开启定时拉取config目录下数据，如消费进度
                 handleSlaveSynchronize(BrokerRole.SLAVE);
 
                 // Notify ha service, change to slave
+                // 7. haService处理
                 this.haService.changeToSlave(newMasterAddress, newMasterEpoch, brokerControllerId);
-
+                // 8. topic配置版本更新为新epoch
                 this.brokerController.getTopicConfigManager().getDataVersion().nextVersion(newMasterEpoch);
+                // 9. 向所有nameserver发送注册请求
                 registerBrokerWhenRoleChange();
             }
         }
@@ -389,7 +412,8 @@ public class ReplicasManager {
     private boolean brokerElect() {
         // Broker try to elect itself as a master in broker set.
         try {
-            Pair<ElectMasterResponseHeader, Set<Long>> tryElectResponsePair = this.brokerOuterAPI.brokerElect(this.controllerLeaderAddress, this.brokerConfig.getBrokerClusterName(),
+            Pair<ElectMasterResponseHeader, Set<Long>> tryElectResponsePair =
+                    this.brokerOuterAPI.brokerElect(this.controllerLeaderAddress, this.brokerConfig.getBrokerClusterName(),
                 this.brokerConfig.getBrokerName(), this.brokerControllerId);
             ElectMasterResponseHeader tryElectResponse = tryElectResponsePair.getObject1();
             Set<Long> syncStateSet = tryElectResponsePair.getObject2();
@@ -423,11 +447,11 @@ public class ReplicasManager {
                     this.brokerConfig.getBrokerName(),
                     this.brokerControllerId,
                     this.brokerConfig.getSendHeartbeatTimeoutMillis(),
-                    this.brokerConfig.isInBrokerContainer(), this.getLastEpoch(),
-                    this.brokerController.getMessageStore().getMaxPhyOffset(),
-                    this.brokerController.getMessageStore().getConfirmOffset(),
-                    this.brokerConfig.getControllerHeartBeatTimeoutMills(),
-                    this.brokerConfig.getBrokerElectionPriority()
+                    this.brokerConfig.isInBrokerContainer(), this.getLastEpoch(), // epoch
+                    this.brokerController.getMessageStore().getMaxPhyOffset(), // max offset
+                    this.brokerController.getMessageStore().getConfirmOffset(), // confirmOffset
+                    this.brokerConfig.getControllerHeartBeatTimeoutMills(), // 10s
+                    this.brokerConfig.getBrokerElectionPriority() // 选举优先级
                 );
             }
         }
@@ -441,7 +465,7 @@ public class ReplicasManager {
     private boolean register() {
         try {
             // 1. confirm now registering state
-            confirmNowRegisteringState();
+            confirmNowRegisteringState(); // 恢复注册状态
             LOGGER.info("Confirm now register state: {}", this.registerState);
             // 2. check metadata/tempMetadata if valid
             if (!checkMetadataValid()) {
@@ -450,16 +474,18 @@ public class ReplicasManager {
             }
             // 2. get next assigning brokerId, and create temp metadata file
             if (this.registerState == RegisterState.INITIAL) {
+                // 请求leader controller获取分配给自己的id
                 Long nextBrokerId = getNextBrokerId();
+                // 持久化 brokerIdentity-temp文件
                 if (nextBrokerId == null || !createTempMetadataFile(nextBrokerId)) {
                     LOGGER.error("Failed to create temp metadata file, nextBrokerId: {}", nextBrokerId);
                     return false;
                 }
                 this.registerState = RegisterState.CREATE_TEMP_METADATA_FILE_DONE;
-                LOGGER.info("Register state change to {}, temp metadata: {}", this.registerState, this.tempBrokerMetadata);
             }
             // 3. apply brokerId to controller, and create metadata file
             if (this.registerState == RegisterState.CREATE_TEMP_METADATA_FILE_DONE) {
+                // 请求leader controller应用分配给自己的id
                 if (!applyBrokerId()) {
                     // apply broker id failed, means that this brokerId has been used
                     // delete temp metadata file
@@ -469,21 +495,21 @@ public class ReplicasManager {
                     LOGGER.info("Register state change to: {}", this.registerState);
                     return false;
                 }
+                // 持久化 创建brokerIdentity文件，删除brokerIdentity-temp文件
                 if (!createMetadataFileAndDeleteTemp()) {
                     LOGGER.error("Failed to create metadata file and delete temp metadata file, temp metadata: {}", this.tempBrokerMetadata);
                     return false;
                 }
                 this.registerState = RegisterState.CREATE_METADATA_FILE_DONE;
-                LOGGER.info("Register state change to: {}, metadata: {}", this.registerState, this.brokerMetadata);
             }
             // 4. register
             if (this.registerState == RegisterState.CREATE_METADATA_FILE_DONE) {
+                // 请求leader controller注册当前broker
                 if (!registerBrokerToController()) {
                     LOGGER.error("Failed to register broker to controller");
                     return false;
                 }
                 this.registerState = RegisterState.REGISTERED;
-                LOGGER.info("Register state change to: {}, masterBrokerId: {}, masterBrokerAddr: {}", this.registerState, this.masterBrokerId, this.masterAddress);
             }
             return true;
         } catch (final Exception e) {
@@ -499,7 +525,9 @@ public class ReplicasManager {
      */
     private Long getNextBrokerId() {
         try {
-            GetNextBrokerIdResponseHeader nextBrokerIdResp = this.brokerOuterAPI.getNextBrokerId(this.brokerConfig.getBrokerClusterName(), this.brokerConfig.getBrokerName(), this.controllerLeaderAddress);
+            GetNextBrokerIdResponseHeader nextBrokerIdResp =
+                    this.brokerOuterAPI.getNextBrokerId(this.brokerConfig.getBrokerClusterName(),
+                            this.brokerConfig.getBrokerName(), this.controllerLeaderAddress);
             return nextBrokerIdResp.getNextBrokerId();
         } catch (Exception e) {
             LOGGER.error("fail to get next broker id from controller", e);
@@ -518,7 +546,11 @@ public class ReplicasManager {
         // generate register check code, format like that: $ipAddress;$timestamp
         String registerCheckCode = this.brokerAddress + ";" + System.currentTimeMillis();
         try {
-            this.tempBrokerMetadata.updateAndPersist(brokerConfig.getBrokerClusterName(), brokerConfig.getBrokerName(), brokerId, registerCheckCode);
+            this.tempBrokerMetadata.updateAndPersist(
+                    brokerConfig.getBrokerClusterName(),
+                    brokerConfig.getBrokerName(),
+                    brokerId,
+                    registerCheckCode);
             return true;
         } catch (Exception e) {
             LOGGER.error("update and persist temp broker metadata file failed", e);
@@ -534,7 +566,8 @@ public class ReplicasManager {
      */
     private boolean applyBrokerId() {
         try {
-            ApplyBrokerIdResponseHeader response = this.brokerOuterAPI.applyBrokerId(brokerConfig.getBrokerClusterName(), brokerConfig.getBrokerName(),
+            ApplyBrokerIdResponseHeader response =
+                    this.brokerOuterAPI.applyBrokerId(brokerConfig.getBrokerClusterName(), brokerConfig.getBrokerName(),
                 tempBrokerMetadata.getBrokerId(), tempBrokerMetadata.getRegisterCheckCode(), this.controllerLeaderAddress);
             return true;
 
@@ -552,7 +585,10 @@ public class ReplicasManager {
     private boolean createMetadataFileAndDeleteTemp() {
         // create metadata file and delete temp metadata file
         try {
-            this.brokerMetadata.updateAndPersist(brokerConfig.getBrokerClusterName(), brokerConfig.getBrokerName(), tempBrokerMetadata.getBrokerId());
+            this.brokerMetadata.updateAndPersist(
+                    brokerConfig.getBrokerClusterName(),
+                    brokerConfig.getBrokerName(),
+                    tempBrokerMetadata.getBrokerId());
             this.tempBrokerMetadata.clear();
             this.brokerControllerId = this.brokerMetadata.getBrokerId();
             this.haService.setBrokerControllerId(this.brokerControllerId);
@@ -572,19 +608,21 @@ public class ReplicasManager {
      */
     private boolean registerBrokerToController() {
         try {
-            Pair<RegisterBrokerToControllerResponseHeader, Set<Long>> responsePair = this.brokerOuterAPI.registerBrokerToController(brokerConfig.getBrokerClusterName(), brokerConfig.getBrokerName(), brokerControllerId, brokerAddress, controllerLeaderAddress);
+            Pair<RegisterBrokerToControllerResponseHeader, Set<Long>> responsePair =
+                    this.brokerOuterAPI.registerBrokerToController(brokerConfig.getBrokerClusterName(),
+                            brokerConfig.getBrokerName(), brokerControllerId, brokerAddress, controllerLeaderAddress);
             if (responsePair == null)
                 return false;
             RegisterBrokerToControllerResponseHeader response = responsePair.getObject1();
             Set<Long> syncStateSet = responsePair.getObject2();
             final Long masterBrokerId = response.getMasterBrokerId();
             final String masterAddress = response.getMasterAddress();
-            if (masterBrokerId == null) {
+            if (masterBrokerId == null) { // 还未产生master
                 return true;
             }
-            if (this.brokerControllerId.equals(masterBrokerId)) {
+            if (this.brokerControllerId.equals(masterBrokerId)) { // 当前broker是master
                 changeToMaster(response.getMasterEpoch(), response.getSyncStateSetEpoch(), syncStateSet);
-            } else {
+            } else { // 当前broker是slave
                 changeToSlave(masterAddress, response.getMasterEpoch(), masterBrokerId);
             }
             return true;
@@ -599,6 +637,7 @@ public class ReplicasManager {
      */
     private void confirmNowRegisteringState() {
         // 1. check if metadata exist
+        // 已经应用brokerId成功，只需要注册即可
         try {
             this.brokerMetadata.readFromFile();
         } catch (Exception e) {
@@ -611,6 +650,7 @@ public class ReplicasManager {
             return;
         }
         // 2. check if temp metadata exist
+        // 仅仅分配brokerId成功，还未应用brokerId
         try {
             this.tempBrokerMetadata.readFromFile();
         } catch (Exception e) {
@@ -656,7 +696,8 @@ public class ReplicasManager {
         this.scheduledService.scheduleAtFixedRate(() -> {
             try {
                 // CONTROLLER_GET_REPLICA_INFO 获取broker组的SyncStateSet信息
-                final Pair<GetReplicaInfoResponseHeader, SyncStateSet> result = this.brokerOuterAPI.getReplicaInfo(this.controllerLeaderAddress, this.brokerConfig.getBrokerName());
+                final Pair<GetReplicaInfoResponseHeader, SyncStateSet> result =
+                        this.brokerOuterAPI.getReplicaInfo(this.controllerLeaderAddress, this.brokerConfig.getBrokerName());
                 final GetReplicaInfoResponseHeader info = result.getObject1();
                 final SyncStateSet syncStateSet = result.getObject2();
                 final String newMasterAddress = info.getMasterAddress();
@@ -664,7 +705,7 @@ public class ReplicasManager {
                 final Long masterBrokerId = info.getMasterBrokerId();
                 synchronized (this) {
                     // Check if master changed
-                    if (newMasterEpoch > this.masterEpoch) {
+                    if (newMasterEpoch > this.masterEpoch) { // 1 master变更补偿
                         if (StringUtils.isNoneEmpty(newMasterAddress) && masterBrokerId != null) {
                             if (masterBrokerId.equals(this.brokerControllerId)) {
                                 // If this broker is now the master
@@ -677,7 +718,7 @@ public class ReplicasManager {
                             // In this case, the master in controller is null, try elect in controller, this will trigger the electMasterEvent in controller.
                             brokerElect();
                         }
-                    } else if (newMasterEpoch == this.masterEpoch) {
+                    } else if (newMasterEpoch == this.masterEpoch) { // 2 SyncStateSet变更补偿
                         // Check if SyncStateSet changed
                         if (isMasterState()) {
                             changeSyncStateSet(syncStateSet.getSyncStateSet(), syncStateSet.getSyncStateSetEpoch());
@@ -697,7 +738,7 @@ public class ReplicasManager {
             } catch (final Exception e) {
                 LOGGER.warn("Error happen when get broker {}'s metadata", this.brokerConfig.getBrokerName(), e);
             }
-        }, 3 * 1000, this.brokerConfig.getSyncBrokerMetadataPeriod(), TimeUnit.MILLISECONDS);
+        }, 3 * 1000, this.brokerConfig.getSyncBrokerMetadataPeriod()/* 5s */, TimeUnit.MILLISECONDS);
     }
 
     /**
@@ -751,10 +792,11 @@ public class ReplicasManager {
         }
         this.checkSyncStateSetTaskFuture = this.scheduledService.scheduleAtFixedRate(() -> {
             checkSyncStateSetAndDoReport();
-        }, 3 * 1000, this.brokerConfig.getCheckSyncStateSetPeriod(), TimeUnit.MILLISECONDS);
+        }, 3 * 1000, this.brokerConfig.getCheckSyncStateSetPeriod()/*5s*/, TimeUnit.MILLISECONDS);
     }
 
     private void checkSyncStateSetAndDoReport() {
+        // 1. SyncStateSet收缩
         final Set<Long> newSyncStateSet = this.haService.maybeShrinkSyncStateSet();
         newSyncStateSet.add(this.brokerControllerId);
         synchronized (this) {
@@ -765,16 +807,22 @@ public class ReplicasManager {
                 }
             }
         }
+        // 2. 如果SyncStateSet变更，请求controller
         doReportSyncStateSetChanged(newSyncStateSet);
     }
 
     private void doReportSyncStateSetChanged(Set<Long> newSyncStateSet) {
         try {
-            final SyncStateSet result = this.brokerOuterAPI.alterSyncStateSet(this.controllerLeaderAddress, this.brokerConfig.getBrokerName(), this.brokerControllerId, this.masterEpoch, newSyncStateSet, this.syncStateSetEpoch);
+            // master broker返回SyncStateSet和对应版本epoch
+            final SyncStateSet result = this.brokerOuterAPI.alterSyncStateSet(this.controllerLeaderAddress,
+                    this.brokerConfig.getBrokerName(), this.brokerControllerId,
+                    this.masterEpoch, newSyncStateSet, this.syncStateSetEpoch);
             if (result != null) {
+                // 执行SyncStateSet实际变更
                 changeSyncStateSet(result.getSyncStateSet(), result.getSyncStateSetEpoch());
             }
         } catch (final Exception e) {
+            // 发生异常，需要broker主动拉取SyncStateSet变更结果
             LOGGER.error("Error happen when change SyncStateSet, broker:{}, masterAddress:{}, masterEpoch:{}, oldSyncStateSet:{}, newSyncStateSet:{}, syncStateSetEpoch:{}",
                 this.brokerConfig.getBrokerName(), this.masterAddress, this.masterEpoch, this.syncStateSet, newSyncStateSet, this.syncStateSetEpoch, e);
         }

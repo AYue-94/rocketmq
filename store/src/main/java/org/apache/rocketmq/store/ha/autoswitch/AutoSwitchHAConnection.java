@@ -17,12 +17,6 @@
 
 package org.apache.rocketmq.store.ha.autoswitch;
 
-import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.nio.channels.SelectionKey;
-import java.nio.channels.Selector;
-import java.nio.channels.SocketChannel;
-import java.util.List;
 import org.apache.rocketmq.common.ServiceThread;
 import org.apache.rocketmq.common.constant.LoggerName;
 import org.apache.rocketmq.common.utils.NetworkUtil;
@@ -37,6 +31,13 @@ import org.apache.rocketmq.store.ha.HAConnection;
 import org.apache.rocketmq.store.ha.HAConnectionState;
 import org.apache.rocketmq.store.ha.io.AbstractHAReader;
 import org.apache.rocketmq.store.ha.io.HAWriter;
+
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.channels.SelectionKey;
+import java.nio.channels.Selector;
+import java.nio.channels.SocketChannel;
+import java.util.List;
 
 public class AutoSwitchHAConnection implements HAConnection {
 
@@ -206,15 +207,21 @@ public class AutoSwitchHAConnection implements HAConnection {
         return isSyncFromLastFile;
     }
 
+    // writer
     private synchronized void updateLastTransferInfo() {
         this.lastMasterMaxOffset = this.haService.getDefaultMessageStore().getMaxPhyOffset();
         this.lastTransferTimeMs = System.currentTimeMillis();
     }
 
+    // reader
     private synchronized void maybeExpandInSyncStateSet(long slaveMaxOffset) {
+        // 当slave追上master的最大offset
         if (!this.isAsyncLearner && slaveMaxOffset >= this.lastMasterMaxOffset) {
-            long caughtUpTimeMs = this.haService.getDefaultMessageStore().getMaxPhyOffset() == slaveMaxOffset ? System.currentTimeMillis() : this.lastTransferTimeMs;
+            long caughtUpTimeMs = this.haService.getDefaultMessageStore().getMaxPhyOffset() == slaveMaxOffset
+                    ? System.currentTimeMillis() : this.lastTransferTimeMs;
+            // 更新slave与master同步时间
             this.haService.updateConnectionLastCaughtUpTime(this.slaveId, caughtUpTimeMs);
+            // 更新SyncStateSet
             this.haService.maybeExpandInSyncStateSet(this.slaveId, slaveMaxOffset);
         }
     }
@@ -256,6 +263,7 @@ public class AutoSwitchHAConnection implements HAConnection {
                     }
 
                     long interval = haService.getDefaultMessageStore().getSystemClock().now() - this.lastReadTimestamp;
+                    // 20s读空闲，关闭
                     if (interval > haService.getDefaultMessageStore().getMessageStoreConfig().getHaHousekeepingInterval()) {
                         LOGGER.warn("ha housekeeping, found this connection[" + clientAddress + "] expired, " + interval);
                         break;
@@ -338,13 +346,17 @@ public class AutoSwitchHAConnection implements HAConnection {
                                 long slaveMaxOffset = byteBufferRead.getLong(readPosition + 4);
                                 ReadSocketService.this.processPosition += AutoSwitchHAClient.TRANSFER_HEADER_SIZE;
 
+                                // 更新master侧slave的offset
                                 AutoSwitchHAConnection.this.slaveAckOffset = slaveMaxOffset;
                                 if (slaveRequestOffset < 0) {
                                     slaveRequestOffset = slaveMaxOffset;
                                 }
                                 byteBufferRead.position(readSocketPos);
+                                // 扩展SyncStateSet
                                 maybeExpandInSyncStateSet(slaveMaxOffset);
+                                // 更新confirmOffset
                                 AutoSwitchHAConnection.this.haService.updateConfirmOffsetWhenSlaveAck(AutoSwitchHAConnection.this.slaveId);
+                                // 唤醒写消息等待ha线程
                                 AutoSwitchHAConnection.this.haService.notifyTransferSome(AutoSwitchHAConnection.this.slaveAckOffset);
                                 break;
                             default:
@@ -540,11 +552,11 @@ public class AutoSwitchHAConnection implements HAConnection {
             this.byteBufferHeader.putInt(currentState.ordinal());
             // Body size
             this.byteBufferHeader.putInt(bodySize);
-            // Offset
+            // Offset commitlog的起始offset
             this.byteBufferHeader.putLong(nextOffset);
-            // Epoch
+            // Epoch 当前传输commitlog所属epoch
             this.byteBufferHeader.putInt(entry.getEpoch());
-            // EpochStartOffset
+            // EpochStartOffset 当前传输commitlog所属epoch的startOffset
             this.byteBufferHeader.putLong(entry.getStartOffset());
             // Additional info(confirm offset)
             final long confirmOffset = AutoSwitchHAConnection.this.haService.getDefaultMessageStore().getConfirmOffset();
@@ -563,6 +575,7 @@ public class AutoSwitchHAConnection implements HAConnection {
 
         private void transferToSlave() throws Exception {
             if (this.lastWriteOver) {
+                // writer空闲，每隔5s向slave发送心跳包，不包含body，只包含header
                 this.lastWriteOver = sendHeartbeatIfNeeded();
             } else {
                 // maxTransferSize == -1 means to continue transfer remaining data.
@@ -571,12 +584,14 @@ public class AutoSwitchHAConnection implements HAConnection {
             if (!this.lastWriteOver) {
                 return;
             }
-
+            // 根据 nextTransferFromWhere 从commitlog读数据 selectMappedBufferResult
             int size = this.getNextTransferDataSize();
             if (size > 0) {
+                // 32k限制
                 if (size > haService.getDefaultMessageStore().getMessageStoreConfig().getHaTransferBatchSize()) {
-                    size = haService.getDefaultMessageStore().getMessageStoreConfig().getHaTransferBatchSize();
+                    size = haService.getDefaultMessageStore().getMessageStoreConfig().getHaTransferBatchSize(); // 32k
                 }
+                // 流控 默认未开
                 int canTransferMaxBytes = flowMonitor.canTransferMaxByteNum();
                 if (size > canTransferMaxBytes) {
                     if (System.currentTimeMillis() - lastPrintTimestamp > 1000) {
@@ -595,6 +610,7 @@ public class AutoSwitchHAConnection implements HAConnection {
 
                 // We must ensure that the transmitted logs are within the same epoch
                 // If currentEpochEndOffset == -1, means that currentTransferEpoch = last epoch, so the endOffset = Long.max
+                // 跨epoch，拆成两次处理
                 final long currentEpochEndOffset = AutoSwitchHAConnection.this.currentTransferEpochEndOffset;
                 if (currentEpochEndOffset != -1 && this.nextTransferFromWhere + size > currentEpochEndOffset) {
                     final EpochEntry epochEntry = AutoSwitchHAConnection.this.epochCache.nextEntry(AutoSwitchHAConnection.this.currentTransferEpoch);
@@ -612,11 +628,14 @@ public class AutoSwitchHAConnection implements HAConnection {
                 updateLastTransferInfo();
 
                 // Build Header
+                // 构造请求头
                 buildTransferHeaderBuffer(this.transferOffset, size);
 
+                // 写数据 Header + selectMappedBufferResult
                 this.lastWriteOver = this.transferData(size);
             } else {
                 // If size == 0, we should update the lastCatchupTimeMs
+                // slave已经与master同步，只更新时间
                 AutoSwitchHAConnection.this.haService.updateConnectionLastCaughtUpTime(AutoSwitchHAConnection.this.slaveId, System.currentTimeMillis());
                 haService.getWaitNotifyObject().allWaitForRunning(100);
             }
@@ -659,6 +678,7 @@ public class AutoSwitchHAConnection implements HAConnection {
                             }
 
                             if (-1 == this.nextTransferFromWhere) {
+                                // 如果slave没数据，从哪里开始传输
                                 if (0 == slaveRequestOffset) {
                                     // We must ensure that the starting point of syncing log
                                     // must be the startOffset of a file (maybe the last file, or the minOffset)
@@ -669,8 +689,10 @@ public class AutoSwitchHAConnection implements HAConnection {
                                         if (masterOffset < 0) {
                                             masterOffset = 0;
                                         }
+                                        // isSyncFromLastFile=true，从最后一个commitlog的起始offset开始传输
                                         this.nextTransferFromWhere = masterOffset;
                                     } else {
+                                        // 默认isSyncFromLastFile=false 从第一个commitlog的起始offset开始传输
                                         this.nextTransferFromWhere = haService.getDefaultMessageStore().getCommitLog().getMinOffset();
                                     }
                                 } else {
@@ -684,6 +706,7 @@ public class AutoSwitchHAConnection implements HAConnection {
                                     break;
                                 }
                                 // Setup initial transferEpoch
+                                // 找offset所在EpochEntry
                                 EpochEntry epochEntry = AutoSwitchHAConnection.this.epochCache.findEpochEntryByOffset(this.nextTransferFromWhere);
                                 if (epochEntry == null) {
                                     LOGGER.error("Failed to find an epochEntry to match nextTransferFromWhere {}", this.nextTransferFromWhere);

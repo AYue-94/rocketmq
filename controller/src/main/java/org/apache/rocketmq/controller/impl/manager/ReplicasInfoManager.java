@@ -182,19 +182,22 @@ public class ReplicasInfoManager {
         Set<Long> allReplicaBrokers = controllerConfig.isEnableElectUncleanMaster() ? brokerReplicaInfo.getAllBroker() : null;
         Long newMaster = null;
 
+        // 一个全新的SyncStateInfo 代表broker组第一次选主，直接将当前请求broker设置为master
         if (syncStateInfo.isFirstTimeForElect()) {
             // If never have a master in this broker set, in other words, it is the first time to elect a master
             // elect it as the first master
             newMaster = brokerId;
         }
 
-        // elect by policy
+        // DefaultElectPolicy选主
         if (newMaster == null) {
             // we should assign this assignedBrokerId when the brokerAddress need to be elected by force
             Long assignedBrokerId = request.getDesignateElect() ? brokerId : null;
-            newMaster = electPolicy.elect(brokerReplicaInfo.getClusterName(), brokerReplicaInfo.getBrokerName(), syncStateSet, allReplicaBrokers, oldMaster, assignedBrokerId);
+            newMaster = electPolicy.elect(brokerReplicaInfo.getClusterName(), brokerReplicaInfo.getBrokerName(),
+                    syncStateSet, allReplicaBrokers, oldMaster, assignedBrokerId);
         }
 
+        // 主未发生变化，直接返回
         if (newMaster != null && newMaster.equals(oldMaster)) {
             // old master still valid, change nothing
             String err = String.format("The old master %s is still alive, not need to elect new master for broker %s", oldMaster, brokerReplicaInfo.getBrokerName());
@@ -229,6 +232,7 @@ public class ReplicasInfoManager {
             }
 
             result.setBody(responseBody.encode());
+            // 构造ElectMasterEvent
             final ElectMasterEvent event = new ElectMasterEvent(brokerName, newMaster);
             result.addEvent(event);
             return result;
@@ -237,6 +241,7 @@ public class ReplicasInfoManager {
         // we still need to apply an ElectMasterEvent to tell the statemachine
         // that the master was shutdown and no new master was elected.
         if (request.getBrokerId() == null) {
+            // controller发起的选举，未选出master
             final ElectMasterEvent event = new ElectMasterEvent(false, brokerName);
             result.addEvent(event);
             result.setCodeAndRemark(ResponseCode.CONTROLLER_MASTER_NOT_AVAILABLE, "Old master has down and failed to elect a new broker master");
@@ -286,14 +291,15 @@ public class ReplicasInfoManager {
         if (brokerReplicaInfo == null) {
             // first brokerId
             if (brokerId == MixAll.FIRST_BROKER_CONTROLLER_ID) {
-                result.addEvent(event);
+                result.addEvent(event); // broker组中的一个broker实例首次上线
             } else {
                 result.setCodeAndRemark(ResponseCode.CONTROLLER_BROKER_ID_INVALID, String.format("Broker-set: %s hasn't been registered in controller, but broker try to apply brokerId: %d", brokerName, brokerId));
             }
             return result;
         }
         // broker-set registered
-        if (!brokerReplicaInfo.isBrokerExist(brokerId) || registerCheckCode.equals(brokerReplicaInfo.getBrokerRegisterCheckCode(brokerId))) {
+        if (!brokerReplicaInfo.isBrokerExist(brokerId) // 该broker副本首次上线
+                || registerCheckCode.equals(brokerReplicaInfo.getBrokerRegisterCheckCode(brokerId))) { // 校验码一致
             // if brokerId hasn't been assigned or brokerId was assigned to this broker
             result.addEvent(event);
             return result;
@@ -309,25 +315,28 @@ public class ReplicasInfoManager {
         final Long brokerId = request.getBrokerId();
         final ControllerResult<RegisterBrokerToControllerResponseHeader> result = new ControllerResult<>(new RegisterBrokerToControllerResponseHeader(clusterName, brokerName));
         final RegisterBrokerToControllerResponseHeader response = result.getResponse();
+        // replicaInfoTable和syncStateSetInfoTable中都存在该副本组
         if (!isContainsBroker(brokerName)) {
             result.setCodeAndRemark(ResponseCode.CONTROLLER_BROKER_NEED_TO_BE_REGISTERED, String.format("Broker-set: %s hasn't been registered in controller", brokerName));
             return result;
         }
         final BrokerReplicaInfo brokerReplicaInfo = this.replicaInfoTable.get(brokerName);
         final SyncStateInfo syncStateInfo = this.syncStateSetInfoTable.get(brokerName);
+        // 副本组中存在该brokerId
         if (!brokerReplicaInfo.isBrokerExist(brokerId)) {
             result.setCodeAndRemark(ResponseCode.CONTROLLER_BROKER_NEED_TO_BE_REGISTERED, String.format("BrokerId: %d hasn't been registered in broker-set: %s", brokerId, brokerName));
             return result;
         }
+        // 如果master仍然存活，直接返回当前master信息
         if (syncStateInfo.isMasterExist() && alivePredicate.check(clusterName, brokerName, syncStateInfo.getMasterBrokerId())) {
-            // if master still exist
             response.setMasterBrokerId(syncStateInfo.getMasterBrokerId());
             response.setMasterAddress(brokerReplicaInfo.getBrokerAddress(response.getMasterBrokerId()));
             response.setMasterEpoch(syncStateInfo.getMasterEpoch());
             response.setSyncStateSetEpoch(syncStateInfo.getSyncStateSetEpoch());
         }
+        // 返回SyncStateSet
         result.setBody(new SyncStateSet(syncStateInfo.getSyncStateSet(), syncStateInfo.getSyncStateSetEpoch()).encode());
-        // if this broker's address has been changed, we need to update it
+        // 如果broker地址发生改变，执行一次raft写UpdateBrokerAddressEvent，应用到状态机ReplicasInfoManager.handleUpdateBrokerAddress
         if (!brokerAddress.equals(brokerReplicaInfo.getBrokerAddress(brokerId))) {
             final UpdateBrokerAddressEvent event = new UpdateBrokerAddressEvent(clusterName, brokerName, brokerAddress, brokerId);
             result.addEvent(event);
@@ -440,7 +449,7 @@ public class ReplicasInfoManager {
         this.syncStateSetInfoTable.forEach((brokerName, syncStateInfo) -> {
             Long masterBrokerId = syncStateInfo.getMasterBrokerId();
             String clusterName = syncStateInfo.getClusterName();
-            // broker副本组中的master下线
+            // broker副本组中的master下线（10s未收到心跳）
             if (masterBrokerId != null && !validPredicate.check(clusterName, brokerName, masterBrokerId)) {
                 // Still at least one broker alive
                 Set<Long> brokerIds = this.replicaInfoTable.get(brokerName).getBrokerIdTable().keySet();
@@ -494,21 +503,20 @@ public class ReplicasInfoManager {
 
     private void handleApplyBrokerId(final ApplyBrokerIdEvent event) {
         final String brokerName = event.getBrokerName();
-        if (isContainsBroker(brokerName)) {
+        if (isContainsBroker(brokerName)) { // broker副本组存在，只加入副本组
             final BrokerReplicaInfo brokerReplicaInfo = this.replicaInfoTable.get(brokerName);
             if (!brokerReplicaInfo.isBrokerExist(event.getNewBrokerId())) {
+                // 加入broker副本组
                 brokerReplicaInfo.addBroker(event.getNewBrokerId(), event.getBrokerAddress(), event.getRegisterCheckCode());
             }
-        } else {
-            // First time to register in this broker set
-            // Initialize the replicaInfo about this broker set
+        } else { // broker副本组不存在，初始化broker副本组数据
             final String clusterName = event.getClusterName();
             final BrokerReplicaInfo brokerReplicaInfo = new BrokerReplicaInfo(clusterName, brokerName);
             brokerReplicaInfo.addBroker(event.getNewBrokerId(), event.getBrokerAddress(), event.getRegisterCheckCode());
             this.replicaInfoTable.put(brokerName, brokerReplicaInfo);
             final SyncStateInfo syncStateInfo = new SyncStateInfo(clusterName, brokerName);
             // Initialize an empty syncStateInfo for this broker set
-            this.syncStateSetInfoTable.put(brokerName, syncStateInfo);
+            this.syncStateSetInfoTable.put(brokerName, syncStateInfo); // 初始化副本组的SyncStateInfo
         }
     }
 
@@ -526,7 +534,7 @@ public class ReplicasInfoManager {
         if (isContainsBroker(brokerName)) {
             final SyncStateInfo syncStateInfo = this.syncStateSetInfoTable.get(brokerName);
 
-            if (event.getNewMasterElected()) {
+            if (event.getNewMasterElected()) { // 如果选出新主
                 // Record new master
                 syncStateInfo.updateMasterInfo(newMaster);
 
@@ -534,7 +542,7 @@ public class ReplicasInfoManager {
                 final HashSet<Long> newSyncStateSet = new HashSet<>();
                 newSyncStateSet.add(newMaster);
                 syncStateInfo.updateSyncStateSetInfo(newSyncStateSet);
-            } else {
+            } else { // 未选出新主，往往是controller主动探测master broker下线
                 // If new master was not elected, which means old master was shutdown and the newSyncStateSet list had no more replicas
                 // So we should delete old master, but retain newSyncStateSet list.
                 syncStateInfo.updateMasterInfo(null);

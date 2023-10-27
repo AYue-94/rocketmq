@@ -16,14 +16,15 @@
  */
 package org.apache.rocketmq.controller.impl.manager;
 
+import org.apache.rocketmq.common.MixAll;
+import org.apache.rocketmq.common.Pair;
+
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
-import org.apache.rocketmq.common.MixAll;
-import org.apache.rocketmq.common.Pair;
 
 /**
  * Broker replicas info, mapping from brokerAddress to {brokerId, brokerHaAddress}.
@@ -63,7 +64,7 @@ public class BrokerReplicaInfo {
 
     public void addBroker(final Long brokerId, final String ipAddress, final String registerCheckCode) {
         this.brokerIdInfo.put(brokerId, new Pair<>(ipAddress, registerCheckCode));
-        this.nextAssignBrokerId.incrementAndGet();
+        this.nextAssignBrokerId.incrementAndGet(); // 下个可分配的brokerId
     }
 
     public boolean isBrokerExist(final Long brokerId) {

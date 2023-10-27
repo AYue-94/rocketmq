@@ -59,20 +59,29 @@ import java.util.stream.Collectors;
 public class AutoSwitchHAService extends DefaultHAService {
     private static final Logger LOGGER = LoggerFactory.getLogger(LoggerName.STORE_LOGGER_NAME);
     private final ExecutorService executorService = Executors.newSingleThreadExecutor(new ThreadFactoryImpl("AutoSwitchHAService_Executor_"));
+
+    // slave副本-上次追上master的时间
     private final ConcurrentHashMap<Long/*brokerId*/, Long/*lastCaughtUpTimestamp*/> connectionCaughtUpTimeTable = new ConcurrentHashMap<>();
+
+    // 通知controller syncStateSet变化
     private final List<Consumer<Set<Long/*brokerId*/>>> syncStateSetChangedListeners = new ArrayList<>();
+
+    // syncStateSet
     private final Set<Long/*brokerId*/> syncStateSet = new HashSet<>();
     private final Set<Long> remoteSyncStateSet = new HashSet<>();
+    //  Indicate whether the syncStateSet is currently in the process of being synchronized to controller.
+    private volatile boolean isSynchronizingSyncStateSet = false;
+
     private final ReadWriteLock syncStateSetReadWriteLock = new ReentrantReadWriteLock();
     private final Lock readLock = syncStateSetReadWriteLock.readLock();
     private final Lock writeLock = syncStateSetReadWriteLock.writeLock();
 
-    //  Indicate whether the syncStateSet is currently in the process of being synchronized to controller.
-    private volatile boolean isSynchronizingSyncStateSet = false;
-
+    // 每个master任期内 同步commitlog的offset范围
     private EpochFileCache epochCache;
+    // slave角色haClient
     private AutoSwitchHAClient haClient;
 
+    // 当前broker在controller侧id，brokerControllerId
     private Long brokerControllerId = null;
 
     public AutoSwitchHAService() {
@@ -104,7 +113,9 @@ public class AutoSwitchHAService extends DefaultHAService {
             Long slave = ((AutoSwitchHAConnection) conn).getSlaveId();
             if (syncStateSet.contains(slave)) {
                 syncStateSet.remove(slave);
+                // 加入remoteSyncStateSet
                 markSynchronizingSyncStateSet(syncStateSet);
+                // 通知controller
                 notifySyncStateSetChanged(syncStateSet);
             }
         }
@@ -118,6 +129,7 @@ public class AutoSwitchHAService extends DefaultHAService {
             LOGGER.warn("newMasterEpoch {} < lastEpoch {}, fail to change to master", masterEpoch, lastEpoch);
             return false;
         }
+        // 1. 通讯层connection清理
         destroyConnections();
         // Stop ha client if needed
         if (this.haClient != null) {
@@ -125,15 +137,20 @@ public class AutoSwitchHAService extends DefaultHAService {
         }
 
         // Truncate dirty file
+        // 2. 截断commitlog和consumequeue
         final long truncateOffset = truncateInvalidMsg();
 
+        // 3. 计算confirmOffset，这里会取当前commitlog的最大offset
         this.defaultMessageStore.setConfirmOffset(computeConfirmOffset());
 
+        // 4. 按照上面commitlog计算的offset，截断epoch文件中记录的offset
         if (truncateOffset >= 0) {
             this.epochCache.truncateSuffixByOffset(truncateOffset);
         }
 
         // Append new epoch to epochFile
+
+        // 5. 创建新的epoch记录
         final EpochEntry newEpochEntry = new EpochEntry(masterEpoch, this.defaultMessageStore.getMaxPhyOffset());
         if (this.epochCache.lastEpoch() >= masterEpoch) {
             this.epochCache.truncateSuffixByEpoch(masterEpoch);
@@ -141,6 +158,7 @@ public class AutoSwitchHAService extends DefaultHAService {
         this.epochCache.appendEntry(newEpochEntry);
 
         // Waiting consume queue dispatch
+        // 6. 等待reput（consumequeue）追上commitlog
         while (defaultMessageStore.dispatchBehindBytes() > 0) {
             try {
                 Thread.sleep(100);
@@ -149,6 +167,7 @@ public class AutoSwitchHAService extends DefaultHAService {
             }
         }
 
+        // 7. 开启TransientStorePool，等待 writebuffer commit 到 commitlog文件
         if (defaultMessageStore.isTransientStorePoolEnable()) {
             waitingForAllCommit();
             defaultMessageStore.getTransientStorePool().setRealCommit(true);
@@ -169,7 +188,9 @@ public class AutoSwitchHAService extends DefaultHAService {
             return false;
         }
         try {
+            // 1. 关闭master才会有的HAConnection
             destroyConnections();
+            // 2. 开启slave才用的haClient
             if (this.haClient == null) {
                 this.haClient = new AutoSwitchHAClient(this, defaultMessageStore, this.epochCache, slaveId);
             } else {
@@ -179,6 +200,7 @@ public class AutoSwitchHAService extends DefaultHAService {
             this.haClient.updateHaMasterAddress(null);
             this.haClient.start();
 
+            // 3. 开启TransientStorePool，等待 writebuffer commit
             if (defaultMessageStore.isTransientStorePoolEnable()) {
                 waitingForAllCommit();
                 defaultMessageStore.getTransientStorePool().setRealCommit(false);
@@ -274,10 +296,12 @@ public class AutoSwitchHAService extends DefaultHAService {
         final Set<Long> newSyncStateSet = getLocalSyncStateSet();
         boolean isSyncStateSetChanged = false;
         final long haMaxTimeSlaveNotCatchup = this.defaultMessageStore.getMessageStoreConfig().getHaMaxTimeSlaveNotCatchup();
+        // 扫描connectionCaughtUpTimeTable
         for (Map.Entry<Long, Long> next : this.connectionCaughtUpTimeTable.entrySet()) {
             final Long slaveBrokerId = next.getKey();
             if (newSyncStateSet.contains(slaveBrokerId)) {
                 final Long lastCaughtUpTimeMs = next.getValue();
+                // 超过15s未追上master，从SyncStateSet移除
                 if ((System.currentTimeMillis() - lastCaughtUpTimeMs) > haMaxTimeSlaveNotCatchup) {
                     newSyncStateSet.remove(slaveBrokerId);
                     isSyncStateSetChanged = true;
@@ -287,6 +311,7 @@ public class AutoSwitchHAService extends DefaultHAService {
 
         // If the slaveBrokerId is in syncStateSet but not in connectionCaughtUpTimeTable,
         // it means that the broker has not connected.
+        // SyncStateSet中的slave，没有建立连接，所以不在connectionCaughtUpTimeTable
         for (Long slaveBrokerId : newSyncStateSet) {
             if (!this.connectionCaughtUpTimeTable.containsKey(slaveBrokerId)) {
                 newSyncStateSet.remove(slaveBrokerId);
@@ -305,24 +330,30 @@ public class AutoSwitchHAService extends DefaultHAService {
      * current confirmOffset, and it is caught up to an offset within the current leader epoch.
      */
     public void maybeExpandInSyncStateSet(final Long slaveBrokerId, final long slaveMaxOffset) {
+        // 1. slave在SyncStateSet中，直接返回
         final Set<Long> currentSyncStateSet = getLocalSyncStateSet();
         if (currentSyncStateSet.contains(slaveBrokerId)) {
             return;
         }
         final long confirmOffset = this.defaultMessageStore.getConfirmOffset();
+        // 2. slave的offset追上master的confirmOffset
         if (slaveMaxOffset >= confirmOffset) {
             final EpochEntry currentLeaderEpoch = this.epochCache.lastEntry();
+            // 3. slave的offset在当前epoch中
             if (slaveMaxOffset >= currentLeaderEpoch.getStartOffset()) {
                 LOGGER.info("The slave {} has caught up, slaveMaxOffset: {}, confirmOffset: {}, epoch: {}, leader epoch startOffset: {}.",
                         slaveBrokerId, slaveMaxOffset, confirmOffset, currentLeaderEpoch.getEpoch(), currentLeaderEpoch.getStartOffset());
                 currentSyncStateSet.add(slaveBrokerId);
+                // 加入remoteSyncStateSet
                 markSynchronizingSyncStateSet(currentSyncStateSet);
                 // Notify the upper layer that syncStateSet changed.
+                // 通知controller SyncStateSet发生变化
                 notifySyncStateSetChanged(currentSyncStateSet);
             }
         }
     }
 
+    // SyncStateSet change phase1
     private void markSynchronizingSyncStateSet(final Set<Long> newSyncStateSet) {
         this.writeLock.lock();
         try {
@@ -413,11 +444,16 @@ public class AutoSwitchHAService extends DefaultHAService {
 
     public long computeConfirmOffset() {
         final Set<Long> currentSyncStateSet = getSyncStateSet();
+        // master的最大offset
         long newConfirmOffset = this.defaultMessageStore.getMaxPhyOffset();
+
+        // 与master建立连接的slave
         List<Long> idList = this.connectionList.stream().map(connection -> ((AutoSwitchHAConnection)connection).getSlaveId()).collect(Collectors.toList());
 
         // To avoid the syncStateSet is not consistent with connectionList.
         // Fix issue: https://github.com/apache/rocketmq/issues/6662
+
+        // 如果SyncStateSet中，存在未与master建立连接的slave，保持confirmOffset不变
         for (Long syncId : currentSyncStateSet) {
             if (!idList.contains(syncId) && this.brokerControllerId != null && !Objects.equals(syncId, this.brokerControllerId)) {
                 LOGGER.warn("Slave {} is still in syncStateSet, but has lost its connection. So new offset can't be compute.", syncId);
@@ -426,6 +462,7 @@ public class AutoSwitchHAService extends DefaultHAService {
             }
         }
 
+        // 与master建立连接的slave中，且在SyncStateSet中，最小的slaveOffset
         for (HAConnection connection : this.connectionList) {
             final Long slaveId = ((AutoSwitchHAConnection) connection).getSlaveId();
             if (currentSyncStateSet.contains(slaveId) && connection.getSlaveAckOffset() > 0) {
@@ -454,11 +491,13 @@ public class AutoSwitchHAService extends DefaultHAService {
         this.readLock.lock();
         try {
             if (this.isSynchronizingSyncStateSet) {
+                // 如果正在向controller同步，但是还没收到controller回复
                 Set<Long> unionSyncStateSet = new HashSet<>(this.syncStateSet.size() + this.remoteSyncStateSet.size());
                 unionSyncStateSet.addAll(this.syncStateSet);
                 unionSyncStateSet.addAll(this.remoteSyncStateSet);
                 return unionSyncStateSet;
             } else {
+                // 正常情况
                 HashSet<Long> syncStateSet = new HashSet<>(this.syncStateSet.size());
                 syncStateSet.addAll(this.syncStateSet);
                 return syncStateSet;
@@ -491,6 +530,7 @@ public class AutoSwitchHAService extends DefaultHAService {
      * Try to truncate incomplete msg transferred from master.
      */
     public long truncateInvalidMsg() {
+        // reput进度未落后于commitlog，消息完整，不需要截断
         long dispatchBehind = this.defaultMessageStore.dispatchBehindBytes();
         if (dispatchBehind <= 0) {
             LOGGER.info("Dispatch complete, skip truncate");
@@ -502,6 +542,7 @@ public class AutoSwitchHAService extends DefaultHAService {
         // Here we could use reputFromOffset in DefaultMessageStore directly.
         long reputFromOffset = this.defaultMessageStore.getReputFromOffset();
         do {
+            // 根据reput进度向后找最后一条完整的消息
             SelectMappedBufferResult result = this.defaultMessageStore.getCommitLog().getData(reputFromOffset);
             if (result == null) {
                 break;
@@ -523,6 +564,7 @@ public class AutoSwitchHAService extends DefaultHAService {
                             break;
                         }
                     } else {
+                        // 找到最后一条完整消息，从这里开始截断
                         doNext = false;
                         break;
                     }
@@ -533,6 +575,7 @@ public class AutoSwitchHAService extends DefaultHAService {
         } while (reputFromOffset < this.defaultMessageStore.getMaxPhyOffset() && doNext);
 
         LOGGER.info("Truncate commitLog to {}", reputFromOffset);
+        // 截断commitlog consumequeue
         this.defaultMessageStore.truncateDirtyFiles(reputFromOffset);
         return reputFromOffset;
     }

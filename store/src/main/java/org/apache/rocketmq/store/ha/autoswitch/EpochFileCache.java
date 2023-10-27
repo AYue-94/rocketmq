@@ -17,6 +17,12 @@
 
 package org.apache.rocketmq.store.ha.autoswitch;
 
+import org.apache.rocketmq.common.constant.LoggerName;
+import org.apache.rocketmq.common.utils.CheckpointFile;
+import org.apache.rocketmq.logging.org.slf4j.Logger;
+import org.apache.rocketmq.logging.org.slf4j.LoggerFactory;
+import org.apache.rocketmq.remoting.protocol.EpochEntry;
+
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Iterator;
@@ -27,11 +33,6 @@ import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Predicate;
-import org.apache.rocketmq.common.constant.LoggerName;
-import org.apache.rocketmq.common.utils.CheckpointFile;
-import org.apache.rocketmq.logging.org.slf4j.Logger;
-import org.apache.rocketmq.logging.org.slf4j.LoggerFactory;
-import org.apache.rocketmq.remoting.protocol.EpochEntry;
 
 /**
  * Cache for epochFile. Mapping (Epoch -> StartOffset)
@@ -41,7 +42,9 @@ public class EpochFileCache {
     private final ReadWriteLock readWriteLock = new ReentrantReadWriteLock();
     private final Lock readLock = this.readWriteLock.readLock();
     private final Lock writeLock = this.readWriteLock.writeLock();
+    // master epoch -> startOffset
     private final TreeMap<Integer, EpochEntry> epochMap;
+    // epochFileCheckpoint文件
     private CheckpointFile<EpochEntry> checkpoint;
 
     public EpochFileCache() {
@@ -228,12 +231,15 @@ public class EpochFileCache {
         this.readLock.lock();
         try {
             long consistentOffset = -1;
+            // 按照master epoch倒序遍历
             final Map<Integer, EpochEntry> descendingMap = new TreeMap<>(this.epochMap).descendingMap();
             final Iterator<Map.Entry<Integer, EpochEntry>> iter = descendingMap.entrySet().iterator();
             while (iter.hasNext()) {
                 final Map.Entry<Integer, EpochEntry> curLocalEntry = iter.next();
                 final EpochEntry compareEntry = compareCache.getEntry(curLocalEntry.getKey());
+                // 定位到 epoch和startOffset 相同的entry
                 if (compareEntry != null && compareEntry.getStartOffset() == curLocalEntry.getValue().getStartOffset()) {
+                    // 取两边最小的endOffset作为截断点
                     consistentOffset = Math.min(curLocalEntry.getValue().getEndOffset(), compareEntry.getEndOffset());
                     break;
                 }

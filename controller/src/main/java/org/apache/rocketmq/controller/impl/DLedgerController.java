@@ -220,8 +220,8 @@ public class DLedgerController implements Controller {
 
     @Override
     public RemotingCommand getControllerMetadata() {
-        final MemberState state = getMemberState();
-        final Map<String, String> peers = state.getPeerMap();
+        final MemberState state = getMemberState(); // dledger成员状态
+        final Map<String, String> peers = state.getPeerMap(); // 所有成员
         final StringBuilder sb = new StringBuilder();
         for (Map.Entry<String, String> entry : peers.entrySet()) {
             final String peer = entry.getKey() + ":" + entry.getValue();
@@ -257,7 +257,8 @@ public class DLedgerController implements Controller {
         List<String> brokerSets = this.replicasInfoManager.scanNeedReelectBrokerSets(this.brokerAlivePredicate);
         for (String brokerName : brokerSets) {
             // Notify ControllerManager
-            this.brokerLifecycleListeners.forEach(listener -> listener.onBrokerInactive(null, brokerName, null));
+            this.brokerLifecycleListeners.forEach(listener ->
+                    listener.onBrokerInactive(null, brokerName, null));
         }
     }
 
@@ -359,7 +360,9 @@ public class DLedgerController implements Controller {
         }
 
         public <T> CompletableFuture<RemotingCommand> appendEvent(final String name,
-            final Supplier<ControllerResult<T>> supplier, boolean isWriteEvent) {
+                                                                  final Supplier<ControllerResult<T>> supplier,
+                                                                  boolean isWriteEvent) {
+            // 确认自己是leader controller
             if (isStopped() || !DLedgerController.this.roleHandler.isLeaderState()) {
                 final RemotingCommand command = RemotingCommand.createResponseCommand(ResponseCode.CONTROLLER_NOT_LEADER, "The controller is not in leader state");
                 final CompletableFuture<RemotingCommand> future = new CompletableFuture<>();
@@ -371,6 +374,7 @@ public class DLedgerController implements Controller {
             int tryTimes = 0;
             while (true) {
                 try {
+                    // 放入内存队列，顺序消费
                     if (!this.eventQueue.offer(event, 5, TimeUnit.SECONDS)) {
                         continue;
                     }
@@ -405,13 +409,15 @@ public class DLedgerController implements Controller {
 
         @Override
         public void run() throws Throwable {
+            // 1. 执行业务方法，业务方法可能返回一些events
             final ControllerResult<T> result = this.supplier.get();
             log.info("Event queue run event {}, get the result {}", this.name, result);
             boolean appendSuccess = true;
 
+            // 2. 如果读请求 或 业务events为空，走raft读
             if (!this.isWriteEvent || result.getEvents() == null || result.getEvents().isEmpty()) {
                 // read event, or write event with empty events in response which also equals to read event
-                if (DLedgerController.this.controllerConfig.isProcessReadEvent()) {
+                if (DLedgerController.this.controllerConfig.isProcessReadEvent()) { // false
                     // Now the DLedger don't have the function of Read-Index or Lease-Read,
                     // So we still need to propose an empty request to DLedger.
                     final AppendEntryRequest request = new AppendEntryRequest();
@@ -419,6 +425,7 @@ public class DLedgerController implements Controller {
                     appendSuccess = appendToDLedgerAndWait(request);
                 }
             } else {
+                // 3. 如果写请求且业务events不为空，走raft写
                 // write event
                 final List<EventMessage> events = result.getEvents();
                 final List<byte[]> eventBytes = new ArrayList<>(events.size());
@@ -514,7 +521,8 @@ public class DLedgerController implements Controller {
                                         long scanInactiveMasterInterval = DLedgerController.this.controllerConfig.getScanInactiveMasterInterval();
                                         // 开启定时任务，每隔5s，扫描是否有master broker下线
                                         DLedgerController.this.scanInactiveMasterFuture =
-                                                DLedgerController.this.scanInactiveMasterService.scheduleAtFixedRate(DLedgerController.this::scanInactiveMasterAndTriggerReelect,
+                                                DLedgerController.this.scanInactiveMasterService.scheduleAtFixedRate(
+                                                        DLedgerController.this::scanInactiveMasterAndTriggerReelect,
                                                         scanInactiveMasterInterval, scanInactiveMasterInterval, TimeUnit.MILLISECONDS);
                                     }
                                     break;

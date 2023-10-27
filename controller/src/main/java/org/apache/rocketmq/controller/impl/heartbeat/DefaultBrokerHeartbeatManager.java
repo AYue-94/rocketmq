@@ -89,7 +89,7 @@ public class DefaultBrokerHeartbeatManager implements BrokerHeartbeatManager {
                         // 关闭底层通讯channel
                         RemotingHelper.closeChannel(channel);
                     }
-                    // org.apache.rocketmq.controller.ControllerManager.onBrokerInactive 可能触发broker选主
+                    // org.apache.rocketmq.controller.ControllerManager.onBrokerInactive
                     this.executor.submit(() ->
                         notifyBrokerInActive(next.getKey().getClusterName(), next.getValue().getBrokerName(), next.getValue().getBrokerId()));
                     log.warn("The broker channel {} expired, brokerInfo {}, expired {}ms", next.getValue().getChannel(), next.getKey(), timeoutMillis);

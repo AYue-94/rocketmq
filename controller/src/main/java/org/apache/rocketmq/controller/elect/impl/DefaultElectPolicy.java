@@ -36,6 +36,7 @@ public class DefaultElectPolicy implements ElectPolicy {
     private BrokerLiveInfoGetter brokerLiveInfoGetter;
 
     // Sort in descending order according to<epoch, offset>, and sort in ascending order according to priority
+    // epoch -> maxOffset -> brokerElectionPriority
     private final Comparator<BrokerLiveInfo> comparator = (o1, o2) -> {
         if (o1.getEpoch() == o2.getEpoch()) {
             return o1.getMaxOffset() == o2.getMaxOffset() ? o1.getElectionPriority() - o2.getElectionPriority() :
@@ -81,6 +82,7 @@ public class DefaultElectPolicy implements ElectPolicy {
         }
 
         // try to elect in all allReplicaBrokers
+        // 默认enableElectUncleanMaster=false，这里为null，不会选择不在syncStateSet中的broker成为master
         if (allReplicaBrokers != null) {
             newMaster = tryElect(clusterName, brokerName, allReplicaBrokers, oldMaster, preferBrokerId);
         }
@@ -89,20 +91,22 @@ public class DefaultElectPolicy implements ElectPolicy {
 
 
     private Long tryElect(String clusterName, String brokerName, Set<Long> brokers, Long oldMaster, Long preferBrokerId) {
+        // 过滤存活broker
         if (this.validPredicate != null) {
             brokers = brokers.stream().filter(brokerAddr -> this.validPredicate.check(clusterName, brokerName, brokerAddr)).collect(Collectors.toSet());
         }
         if (!brokers.isEmpty()) {
-            // if old master is still valid, and preferBrokerAddr is blank or is equals to oldMaster
+            // 老master存活，直接返回老master
             if (brokers.contains(oldMaster) && (preferBrokerId == null || preferBrokerId.equals(oldMaster))) {
                 return oldMaster;
             }
 
-            // if preferBrokerAddr is valid, we choose it, otherwise we choose nothing
+            // 通过electMaster命令 指定brokerId成为master
             if (preferBrokerId != null) {
                 return brokers.contains(preferBrokerId) ? preferBrokerId : null;
             }
 
+            // 通过broker心跳信息 + comparator 选择broker
             if (this.brokerLiveInfoGetter != null) {
                 // sort brokerLiveInfos by (epoch,maxOffset)
                 TreeSet<BrokerLiveInfo> brokerLiveInfos = new TreeSet<>(this.comparator);

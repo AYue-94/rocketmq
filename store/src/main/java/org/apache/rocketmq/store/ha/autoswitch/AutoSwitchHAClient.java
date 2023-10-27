@@ -17,15 +17,6 @@
 
 package org.apache.rocketmq.store.ha.autoswitch;
 
-import java.io.IOException;
-import java.net.SocketAddress;
-import java.nio.ByteBuffer;
-import java.nio.channels.SelectionKey;
-import java.nio.channels.Selector;
-import java.nio.channels.SocketChannel;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.concurrent.atomic.AtomicReference;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.rocketmq.common.ServiceThread;
 import org.apache.rocketmq.common.constant.LoggerName;
@@ -40,6 +31,16 @@ import org.apache.rocketmq.store.ha.HAClient;
 import org.apache.rocketmq.store.ha.HAConnectionState;
 import org.apache.rocketmq.store.ha.io.AbstractHAReader;
 import org.apache.rocketmq.store.ha.io.HAWriter;
+
+import java.io.IOException;
+import java.net.SocketAddress;
+import java.nio.ByteBuffer;
+import java.nio.channels.SelectionKey;
+import java.nio.channels.Selector;
+import java.nio.channels.SocketChannel;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
 public class AutoSwitchHAClient extends ServiceThread implements HAClient {
 
@@ -293,10 +294,14 @@ public class AutoSwitchHAClient extends ServiceThread implements HAClient {
         // Original state
         this.handshakeHeaderBuffer.putInt(HAConnectionState.HANDSHAKE.ordinal());
         // IsSyncFromLastFile
-        short isSyncFromLastFile = this.haService.getDefaultMessageStore().getMessageStoreConfig().isSyncFromLastFile() ? (short) 1 : (short) 0;
+        short isSyncFromLastFile =
+                this.haService.getDefaultMessageStore().getMessageStoreConfig().isSyncFromLastFile()
+                        ? (short) 1 : (short) 0;
         this.handshakeHeaderBuffer.putShort(isSyncFromLastFile);
         // IsAsyncLearner role
-        short isAsyncLearner = this.haService.getDefaultMessageStore().getMessageStoreConfig().isAsyncLearner() ? (short) 1 : (short) 0;
+        short isAsyncLearner =
+                this.haService.getDefaultMessageStore().getMessageStoreConfig().isAsyncLearner()
+                        ? (short) 1 : (short) 0;
         this.handshakeHeaderBuffer.putShort(isAsyncLearner);
         // Slave brokerId
         this.handshakeHeaderBuffer.putLong(this.brokerId);
@@ -306,13 +311,16 @@ public class AutoSwitchHAClient extends ServiceThread implements HAClient {
     }
 
     private void handshakeWithMaster() throws IOException {
+        // 发送handshake
         boolean result = this.sendHandshakeHeader();
         if (!result) {
             closeMasterAndWait();
         }
 
+        // 等master的handshake
         this.selector.select(5000);
 
+        // 处理master的handshake
         result = this.haReader.read(this.socketChannel, this.byteBufferRead);
         if (!result) {
             closeMasterAndWait();
@@ -358,7 +366,7 @@ public class AutoSwitchHAClient extends ServiceThread implements HAClient {
 
     private boolean transferFromMaster() throws IOException {
         boolean result;
-        if (isTimeToReportOffset()) {
+        if (isTimeToReportOffset()) { // 写通道空闲5s，汇报当前slave offset给master
             LOGGER.info("Slave report current offset {}", this.currentReportedOffset);
             result = reportSlaveOffset(HAConnectionState.TRANSFER, this.currentReportedOffset);
             if (!result) {
@@ -368,11 +376,13 @@ public class AutoSwitchHAClient extends ServiceThread implements HAClient {
 
         this.selector.select(1000);
 
+        // 读master发来的commitlog
         result = this.haReader.read(this.socketChannel, this.byteBufferRead);
         if (!result) {
             return false;
         }
 
+        // 如果自己offset变化，汇报master
         return this.reportSlaveMaxOffset(HAConnectionState.TRANSFER);
     }
 
@@ -393,7 +403,7 @@ public class AutoSwitchHAClient extends ServiceThread implements HAClient {
                         if (truncateOffset >= 0) {
                             AutoSwitchHAClient.this.epochCache.truncateSuffixByOffset(truncateOffset);
                         }
-                        if (!connectMaster()) {
+                        if (!connectMaster()) { // 如果执行成功，进入HANDSHAKE
                             LOGGER.warn("AutoSwitchHAClient connect to master {} failed", this.masterHaAddress.get());
                             waitForRunning(1000 * 5);
                         }
@@ -450,6 +460,7 @@ public class AutoSwitchHAClient extends ServiceThread implements HAClient {
             LOGGER.info("master epoch entries is {}", masterEpochCache.getAllEntries());
             LOGGER.info("local epoch entries is {}", localEpochEntries);
 
+            // 比对 自己 和 master 的EpochEntry 找到截断点
             final long truncateOffset = localEpochCache.findConsistentPoint(masterEpochCache);
 
             LOGGER.info("truncateOffset is {}", truncateOffset);
@@ -459,15 +470,22 @@ public class AutoSwitchHAClient extends ServiceThread implements HAClient {
                 LOGGER.error("Failed to find a consistent point between masterEpoch:{} and slaveEpoch:{}", masterEpochEntries, localEpochEntries);
                 return false;
             }
+
+            // 截断commitlog和consumequeue
             if (!this.messageStore.truncateFiles(truncateOffset)) {
                 LOGGER.error("Failed to truncate slave log to {}", truncateOffset);
                 return false;
             }
+
+            // 截断自己的EpochEntry
             this.epochCache.truncateSuffixByOffset(truncateOffset);
             LOGGER.info("Truncate slave log to {} success, change to transfer state", truncateOffset);
+
+            // 进入transfer状态
             changeCurrentState(HAConnectionState.TRANSFER);
             this.currentReportedOffset = truncateOffset;
         }
+        // 汇报自己的offset给master
         if (!reportSlaveMaxOffset(HAConnectionState.TRANSFER)) {
             LOGGER.error("AutoSwitchHAClient report max offset to master failed");
             return false;
@@ -518,6 +536,7 @@ public class AutoSwitchHAClient extends ServiceThread implements HAClient {
                                 // Truncate log
                                 int entrySize = AutoSwitchHAConnection.EPOCH_ENTRY_SIZE;
                                 final int entryNums = bodySize / entrySize;
+                                // 反序列化EpochEntry
                                 final ArrayList<EpochEntry> epochEntries = new ArrayList<>(entryNums);
                                 for (int i = 0; i < entryNums; i++) {
                                     int epoch = byteBufferRead.getInt(AutoSwitchHAClient.this.processPosition + i * entrySize);
@@ -527,7 +546,7 @@ public class AutoSwitchHAClient extends ServiceThread implements HAClient {
                                 byteBufferRead.position(readSocketPos);
                                 AutoSwitchHAClient.this.processPosition += bodySize;
                                 LOGGER.info("Receive handshake, masterMaxPosition {}, masterEpochEntries:{}, try truncate log", masterOffset, epochEntries);
-                                if (!doTruncate(epochEntries, masterOffset)) {
+                                if (!doTruncate(epochEntries, masterOffset)) { // 成功进入TRANSFER
                                     waitForRunning(1000 * 2);
                                     LOGGER.error("AutoSwitchHAClient truncate log failed in handshake state");
                                     return false;
@@ -547,25 +566,26 @@ public class AutoSwitchHAClient extends ServiceThread implements HAClient {
                                 AutoSwitchHAClient.this.processPosition += AutoSwitchHAConnection.TRANSFER_HEADER_SIZE + bodySize;
                                 long slavePhyOffset = AutoSwitchHAClient.this.messageStore.getMaxPhyOffset();
                                 if (slavePhyOffset != 0) {
+                                    // 1. offset校验
                                     if (slavePhyOffset != masterOffset) {
                                         LOGGER.error("master pushed offset not equal the max phy offset in slave, SLAVE: "
                                             + slavePhyOffset + " MASTER: " + masterOffset);
                                         return false;
                                     }
                                 }
-
                                 // If epoch changed
+                                // 2. 当前传输epoch变化落盘
                                 if (masterEpoch != AutoSwitchHAClient.this.currentReceivedEpoch) {
                                     AutoSwitchHAClient.this.currentReceivedEpoch = masterEpoch;
                                     AutoSwitchHAClient.this.epochCache.appendEntry(new EpochEntry(masterEpoch, masterEpochStartOffset));
                                 }
-
+                                // 3. 写commitlog
                                 if (bodySize > 0) {
                                     AutoSwitchHAClient.this.messageStore.appendToCommitLog(masterOffset, bodyData, 0, bodyData.length);
                                 }
-
+                                // 4. 更新confirmOffset
                                 haService.getDefaultMessageStore().setConfirmOffset(Math.min(confirmOffset, messageStore.getMaxPhyOffset()));
-
+                                // 5. 汇报offset
                                 if (!reportSlaveMaxOffset(HAConnectionState.TRANSFER)) {
                                     LOGGER.error("AutoSwitchHAClient report max offset to master failed");
                                     return false;
