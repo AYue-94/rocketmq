@@ -17,13 +17,6 @@
 
 package org.apache.rocketmq.broker;
 
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.CompletableFuture;
 import org.apache.rocketmq.broker.plugin.BrokerAttachedPlugin;
 import org.apache.rocketmq.broker.schedule.DelayOffsetSerializeWrapper;
 import org.apache.rocketmq.common.MixAll;
@@ -39,6 +32,14 @@ import org.apache.rocketmq.store.config.StorePathConfigHelper;
 import org.apache.rocketmq.store.ha.HAConnectionState;
 import org.apache.rocketmq.store.ha.HAConnectionStateNotificationRequest;
 import org.apache.rocketmq.store.timer.TimerCheckpoint;
+
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 
 public class BrokerPreOnlineService extends ServiceThread {
     private static final Logger LOGGER = LoggerFactory.getLogger(LoggerName.BROKER_LOGGER_NAME);
@@ -68,10 +69,12 @@ public class BrokerPreOnlineService extends ServiceThread {
                 break;
             }
             try {
+                // 预上线逻辑
                 boolean isSuccess = this.prepareForBrokerOnline();
                 if (!isSuccess) {
                     this.waitForRunning(1000);
                 } else {
+                    // 预上线成功，BrokerPreOnlineService线程退出
                     break;
                 }
             } catch (Exception e) {
@@ -111,15 +114,18 @@ public class BrokerPreOnlineService extends ServiceThread {
     private boolean prepareForMasterOnline(BrokerMemberGroup brokerMemberGroup) {
         List<Long> brokerIdList = new ArrayList<>(brokerMemberGroup.getBrokerAddrs().keySet());
         Collections.sort(brokerIdList);
+        // 循环所有slave
         while (true) {
-            if (waitBrokerIndex >= brokerIdList.size()) {
+            if (waitBrokerIndex >= brokerIdList.size()) { // 遍历完所有slave
                 LOGGER.info("master preOnline complete, start service");
+                // 4. 启动二级消息调度，解除隔离
                 this.brokerController.startService(MixAll.MASTER_ID, this.brokerController.getBrokerAddr());
                 return true;
             }
 
             String brokerAddrToWait = brokerMemberGroup.getBrokerAddrs().get(brokerIdList.get(waitBrokerIndex));
 
+            // 1. 向slave发送EXCHANGE_BROKER_HA_INFO，同步自己的地址
             try {
                 this.brokerController.getBrokerOuterAPI().
                     sendBrokerHaInfo(brokerAddrToWait, this.brokerController.getHAServerAddr(),
@@ -129,6 +135,7 @@ public class BrokerPreOnlineService extends ServiceThread {
                 return false;
             }
 
+            // 2. 等待 handshake 完成 --- slave与当前master建立连接
             CompletableFuture<Boolean> haHandshakeFuture = waitForHaHandshakeComplete(brokerAddrToWait)
                 .thenApply(result -> futureWaitAction(result, brokerMemberGroup));
 
@@ -141,6 +148,7 @@ public class BrokerPreOnlineService extends ServiceThread {
                 return false;
             }
 
+            // 3. 从slave同步 消费进度 等
             if (syncMetadataReverse(brokerAddrToWait)) {
                 waitBrokerIndex++;
             } else {
@@ -153,10 +161,12 @@ public class BrokerPreOnlineService extends ServiceThread {
         try {
             LOGGER.info("Get metadata reverse from {}", brokerAddr);
 
+            // 延迟topic 消费进度
             String delayOffset = this.brokerController.getBrokerOuterAPI().getAllDelayOffset(brokerAddr);
             DelayOffsetSerializeWrapper delayOffsetSerializeWrapper =
                 DelayOffsetSerializeWrapper.fromJson(delayOffset, DelayOffsetSerializeWrapper.class);
 
+            // 普通消息topic 消费进度
             ConsumerOffsetSerializeWrapper consumerOffsetSerializeWrapper = this.brokerController.getBrokerOuterAPI().getAllConsumerOffset(brokerAddr);
 
             TimerCheckpoint timerCheckpoint = this.brokerController.getBrokerOuterAPI().getTimerCheckPoint(brokerAddr);
@@ -205,6 +215,7 @@ public class BrokerPreOnlineService extends ServiceThread {
     }
 
     private boolean prepareForSlaveOnline(BrokerMemberGroup brokerMemberGroup) {
+        // 1. 请求master broker EXCHANGE_BROKER_HA_INFO 获取ha地址
         BrokerSyncInfo brokerSyncInfo;
         try {
             brokerSyncInfo = this.brokerController.getBrokerOuterAPI()
@@ -221,6 +232,7 @@ public class BrokerPreOnlineService extends ServiceThread {
         }
 
         if (brokerSyncInfo.getMasterHaAddress() != null) {
+            // 2-1. master存活 更新master地址
             this.brokerController.getMessageStore().updateHaMasterAddress(brokerSyncInfo.getMasterHaAddress());
             this.brokerController.getMessageStore().updateMasterAddress(brokerSyncInfo.getMasterAddress());
         } else {
@@ -230,6 +242,7 @@ public class BrokerPreOnlineService extends ServiceThread {
             return true;
         }
 
+        // 3. master存活 等待handshake完成 --- DefaultHAClient/Connection 只需要建立连接即可
         CompletableFuture<Boolean> haHandshakeFuture = waitForHaHandshakeComplete(brokerSyncInfo.getMasterHaAddress())
             .thenApply(result -> futureWaitAction(result, brokerMemberGroup));
 
@@ -246,6 +259,8 @@ public class BrokerPreOnlineService extends ServiceThread {
     }
 
     private boolean prepareForBrokerOnline() {
+
+        // 从nameserver获取broker组成员
         BrokerMemberGroup brokerMemberGroup;
         try {
             brokerMemberGroup = this.brokerController.getBrokerOuterAPI().syncBrokerMemberGroup(
@@ -258,17 +273,23 @@ public class BrokerPreOnlineService extends ServiceThread {
         }
 
         if (brokerMemberGroup != null && !brokerMemberGroup.getBrokerAddrs().isEmpty()) {
+            // broker组内有成员存活
+
             long minBrokerId = getMinBrokerId(brokerMemberGroup.getBrokerAddrs());
 
             if (this.brokerController.getBrokerConfig().getBrokerId() == MixAll.MASTER_ID) {
+                // 当前实例是master
                 return prepareForMasterOnline(brokerMemberGroup);
             } else if (minBrokerId == MixAll.MASTER_ID) {
+                // 当前实例是slave，且master存活
                 return prepareForSlaveOnline(brokerMemberGroup);
             } else {
+                // 当前实例是slave，但是master下线，如果自己是最小broker才能作为代理master上线
                 LOGGER.info("no master online, start service directly");
                 this.brokerController.startService(minBrokerId, brokerMemberGroup.getBrokerAddrs().get(minBrokerId));
             }
         } else {
+            // broker组无存活实例
             LOGGER.info("no other broker online, will start service directly");
             this.brokerController.startService(this.brokerController.getBrokerConfig().getBrokerId(), this.brokerController.getBrokerAddr());
         }

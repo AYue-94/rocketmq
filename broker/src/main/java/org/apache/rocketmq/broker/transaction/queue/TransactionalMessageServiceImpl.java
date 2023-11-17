@@ -16,17 +16,6 @@
  */
 package org.apache.rocketmq.broker.transaction.queue;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Date;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.TimeUnit;
 import org.apache.rocketmq.broker.transaction.AbstractTransactionalMessageCheckListener;
 import org.apache.rocketmq.broker.transaction.OperationResult;
 import org.apache.rocketmq.broker.transaction.TransactionalMessageService;
@@ -47,6 +36,18 @@ import org.apache.rocketmq.remoting.protocol.header.EndTransactionRequestHeader;
 import org.apache.rocketmq.store.PutMessageResult;
 import org.apache.rocketmq.store.PutMessageStatus;
 import org.apache.rocketmq.store.config.BrokerRole;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 
 public class TransactionalMessageServiceImpl implements TransactionalMessageService {
     private static final Logger log = LoggerFactory.getLogger(LoggerName.TRANSACTION_LOGGER_NAME);
@@ -163,9 +164,9 @@ public class TransactionalMessageServiceImpl implements TransactionalMessageServ
                     continue;
                 }
 
-                List<Long> doneOpOffset = new ArrayList<>();
-                HashMap<Long, Long> removeMap = new HashMap<>();
-                HashMap<Long, HashSet<Long>> opMsgMap = new HashMap<Long, HashSet<Long>>();
+                List<Long> doneOpOffset = new ArrayList<>(); // 处理完成的op 一般为空
+                HashMap<Long, Long> removeMap = new HashMap<>(); // 已经匹配half消息 half消费进度 - op消费进度
+                HashMap<Long, HashSet<Long>> opMsgMap = new HashMap<Long, HashSet<Long>>(); // op_offset - half_offset
                 PullResult pullResult = fillOpRemoveMap(removeMap, opQueue, opOffset, halfOffset, opMsgMap, doneOpOffset);
                 if (null == pullResult) {
                     log.error("The queue={} check msgOffset={} with opOffset={} failed, pullResult is null",
@@ -185,7 +186,8 @@ public class TransactionalMessageServiceImpl implements TransactionalMessageServ
                         log.info("Queue={} process time reach max={}", messageQueue, MAX_PROCESS_TIME_LIMIT);
                         break;
                     }
-                    if (removeMap.containsKey(i)) {
+                    // i = halfOffset half消息消费进度 --- 匹配进度
+                    if (removeMap.containsKey(i)) { // half消息匹配op消息 二阶段处理完成
                         log.debug("Half offset {} has been committed/rolled back", i);
                         Long removedOpOffset = removeMap.remove(i);
                         opMsgMap.get(removedOpOffset).remove(i);
@@ -193,7 +195,7 @@ public class TransactionalMessageServiceImpl implements TransactionalMessageServ
                             opMsgMap.remove(removedOpOffset);
                             doneOpOffset.add(removedOpOffset);
                         }
-                    } else {
+                    } else { // half消息未匹配op消息，查询下一条half消息
                         GetResult getResult = getHalfMsg(messageQueue, i);
                         MessageExt msgExt = getResult.getMsg();
                         if (msgExt == null) {
@@ -213,6 +215,7 @@ public class TransactionalMessageServiceImpl implements TransactionalMessageServ
                             }
                         }
 
+                        // 【SlaveActingMaster】二级消息逃逸
                         if (this.transactionalMessageBridge.getBrokerController().getBrokerConfig().isEnableSlaveActingMaster()
                             && this.transactionalMessageBridge.getBrokerController().getMinBrokerIdInGroup()
                             == this.transactionalMessageBridge.getBrokerController().getBrokerIdentity().getBrokerId()
@@ -278,9 +281,9 @@ public class TransactionalMessageServiceImpl implements TransactionalMessageServ
                             || opMsg != null && opMsg.get(opMsg.size() - 1).getBornTimestamp() - startTime > transactionTimeout
                             || valueOfCurrentMinusBorn <= -1;
 
-                        if (isNeedCheck) {
+                        if (isNeedCheck) { // 需要回查
 
-                            if (!putBackHalfMsgQueue(msgExt, i)) {
+                            if (!putBackHalfMsgQueue(msgExt, i)) { // 重新发送一份half消息
                                 continue;
                             }
                             putInQueueCount++;
@@ -288,9 +291,10 @@ public class TransactionalMessageServiceImpl implements TransactionalMessageServ
                                     msgExt.getUserProperty(MessageConst.PROPERTY_REAL_TOPIC),
                                     msgExt.getUserProperty(MessageConst.PROPERTY_UNIQ_CLIENT_MESSAGE_ID_KEYIDX),
                                     msgExt.getQueueOffset(), msgExt.getCommitLogOffset());
-                            listener.resolveHalfMsg(msgExt);
+                            listener.resolveHalfMsg(msgExt); // 回查producer
                         } else {
                             nextOpOffset = pullResult != null ? pullResult.getNextBeginOffset() : nextOpOffset;
+                            // 拉取更多op消息
                             pullResult = fillOpRemoveMap(removeMap, opQueue, nextOpOffset,
                                     halfOffset, opMsgMap, doneOpOffset);
                             if (pullResult == null || pullResult.getPullStatus() == PullStatus.NO_NEW_MSG

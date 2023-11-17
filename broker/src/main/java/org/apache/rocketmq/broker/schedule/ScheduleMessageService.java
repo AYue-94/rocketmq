@@ -17,20 +17,6 @@
 package org.apache.rocketmq.broker.schedule;
 
 import io.opentelemetry.api.common.Attributes;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.Queue;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ScheduledThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
 import org.apache.rocketmq.broker.BrokerController;
 import org.apache.rocketmq.broker.metrics.BrokerMetricsManager;
 import org.apache.rocketmq.common.ConfigManager;
@@ -56,6 +42,21 @@ import org.apache.rocketmq.store.config.StorePathConfigHelper;
 import org.apache.rocketmq.store.queue.ConsumeQueueInterface;
 import org.apache.rocketmq.store.queue.CqUnit;
 import org.apache.rocketmq.store.queue.ReferredIterator;
+
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Queue;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.apache.rocketmq.broker.metrics.BrokerMetricsConstant.LABEL_CONSUMER_GROUP;
 import static org.apache.rocketmq.broker.metrics.BrokerMetricsConstant.LABEL_IS_SYSTEM;
@@ -431,7 +432,7 @@ public class ScheduleMessageService extends ConfigManager {
                     CqUnit cqUnit = bufferCQ.next();
                     long offsetPy = cqUnit.getPos();
                     int sizePy = cqUnit.getSize();
-                    long tagsCode = cqUnit.getTagsCode();
+                    long tagsCode = cqUnit.getTagsCode(); // 目标投递时间
 
                     if (!cqUnit.isTagsCodeValid()) {
                         //can't find ext content.So re compute tags code.
@@ -449,17 +450,19 @@ public class ScheduleMessageService extends ConfigManager {
                     nextOffset = currOffset + cqUnit.getBatchNum();
 
                     long countdown = deliverTimestamp - now;
-                    if (countdown > 0) {
+                    if (countdown > 0) { // 未到期，延迟一会再扫描
                         this.scheduleNextTimerTask(currOffset, DELAY_FOR_A_WHILE);
                         ScheduleMessageService.this.updateOffset(this.delayLevel, currOffset);
                         return;
                     }
 
+                    // 查询延迟消息
                     MessageExt msgExt = ScheduleMessageService.this.brokerController.getMessageStore().lookMessageByOffset(offsetPy, sizePy);
                     if (msgExt == null) {
                         continue;
                     }
 
+                    // 构建真实消息
                     MessageExtBrokerInner msgInner = ScheduleMessageService.this.messageTimeUp(msgExt);
                     if (TopicValidator.RMQ_SYS_TRANS_HALF_TOPIC.equals(msgInner.getTopic())) {
                         log.error("[BUG] the real topic of schedule msg is {}, discard the msg. msg={}",
@@ -471,6 +474,7 @@ public class ScheduleMessageService extends ConfigManager {
                     if (ScheduleMessageService.this.enableAsyncDeliver) {
                         deliverSuc = this.asyncDeliver(msgInner, msgExt.getMsgId(), currOffset, offsetPy, sizePy);
                     } else {
+                        // 投递真实消息
                         deliverSuc = this.syncDeliver(msgInner, msgExt.getMsgId(), currOffset, offsetPy, sizePy);
                     }
 

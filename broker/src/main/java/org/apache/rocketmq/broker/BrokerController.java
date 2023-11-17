@@ -1565,7 +1565,7 @@ public class BrokerController {
         // 基础服务
         startBasicService();
 
-        // isIsolated=true 代表broker可以上线，broker如果
+        // isIsolated=true 代表broker被隔离
         if (!isIsolated && !this.messageStoreConfig.isEnableDLegerCommitLog() && !this.messageStoreConfig.isDuplicationEnable()) {
             changeSpecialServiceStatus(this.brokerConfig.getBrokerId() == MixAll.MASTER_ID);
             this.registerBrokerAll(true, false, true);
@@ -1593,8 +1593,10 @@ public class BrokerController {
         }, 1000 * 10, Math.max(10000, Math.min(brokerConfig.getRegisterNameServerPeriod(), 60000)), TimeUnit.MILLISECONDS));
 
         if (this.brokerConfig.isEnableSlaveActingMaster()) {
+            // 轻量级心跳
             scheduleSendHeartbeat();
 
+            // 定时1s 从nameserver拉取当前broker组成员信息
             scheduledFutures.add(this.syncBrokerMemberGroupExecutorService.scheduleAtFixedRate(new AbstractBrokerRunnable(this.getBrokerIdentity()) {
                 @Override
                 public void run0() {
@@ -1604,7 +1606,7 @@ public class BrokerController {
                         BrokerController.LOG.error("sync BrokerMemberGroup error. ", e);
                     }
                 }
-            }, 1000, this.brokerConfig.getSyncBrokerMemberGroupPeriod(), TimeUnit.MILLISECONDS));
+            }, 1000, this.brokerConfig.getSyncBrokerMemberGroupPeriod()/*1s*/, TimeUnit.MILLISECONDS));
         }
 
         if (this.brokerConfig.isEnableControllerMode()) {
@@ -1763,6 +1765,7 @@ public class BrokerController {
     }
 
     protected void syncBrokerMemberGroup() {
+        // 请求nameserver 获取当前broker组成员
         try {
             brokerMemberGroup = this.getBrokerOuterAPI()
                 .syncBrokerMemberGroup(this.brokerConfig.getBrokerClusterName(), this.brokerConfig.getBrokerName(), this.brokerConfig.isCompatibleWithOldNameSrv());
@@ -1774,8 +1777,11 @@ public class BrokerController {
             BrokerController.LOG.warn("Couldn't find any broker member from namesrv in {}/{}", this.brokerConfig.getBrokerClusterName(), this.brokerConfig.getBrokerName());
             return;
         }
+
+        // 存活副本数量
         this.messageStore.setAliveReplicaNumInGroup(calcAliveBrokerNumInGroup(brokerMemberGroup.getBrokerAddrs()));
 
+        // 最小brokerId更新
         if (!this.isIsolated) {
             long minBrokerId = brokerMemberGroup.minimumBrokerId();
             this.updateMinBroker(minBrokerId, brokerMemberGroup.getBrokerAddrs().get(minBrokerId));
@@ -1833,9 +1839,13 @@ public class BrokerController {
         this.minBrokerIdInGroup = minBrokerId;
         this.minBrokerAddrInGroup = minBrokerAddr;
 
+        // 二级消息调度
         this.changeSpecialServiceStatus(this.brokerConfig.getBrokerId() == minBrokerId);
+
+        // 注册一下
         this.registerBrokerAll(true, false, brokerConfig.isForceRegister());
 
+        // 解除隔离状态，上线
         isIsolated = false;
     }
 
@@ -1912,13 +1922,16 @@ public class BrokerController {
         this.minBrokerIdInGroup = minBrokerId;
         this.minBrokerAddrInGroup = minBrokerAddr;
 
+        // 【1】如果自己是最小brokerId，启动二级消息调度（延迟、事务、POP）
         this.changeSpecialServiceStatus(this.brokerConfig.getBrokerId() == this.minBrokerIdInGroup);
 
+        // 【2】如果master下线，关闭连接，停止同步
         if (offlineBrokerAddr != null && offlineBrokerAddr.equals(this.slaveSynchronize.getMasterAddr())) {
             // master offline
             onMasterOffline();
         }
 
+        // 【3】如果master上线，建立连接，启动同步
         if (minBrokerId == MixAll.MASTER_ID && minBrokerAddr != null) {
             // master online
             onMasterOnline(minBrokerAddr, masterHaAddr);
@@ -1926,6 +1939,7 @@ public class BrokerController {
 
         // notify PullRequest on hold to pull from master.
         if (this.minBrokerIdInGroup == MixAll.MASTER_ID) {
+            // 【4】master上线，唤醒长轮询拉消息线程，让客户端去master拉
             this.pullRequestHoldService.notifyMasterOnline();
         }
     }
@@ -1939,6 +1953,7 @@ public class BrokerController {
                         if (minBrokerId > this.minBrokerIdInGroup) {
                             offlineBrokerAddr = this.minBrokerAddrInGroup;
                         }
+                        // 最小brokerId
                         onMinBrokerChange(minBrokerId, minBrokerAddr, offlineBrokerAddr, null);
                     }
                 } finally {
@@ -1976,10 +1991,13 @@ public class BrokerController {
             }
         }
 
+        // 延迟消息调度
         changeScheduleServiceStatus(shouldStart);
 
+        // 事务消息回查调度
         changeTransactionCheckServiceStatus(shouldStart);
 
+        // POP消息补偿调度
         if (this.ackMessageProcessor != null) {
             LOG.info("Set PopReviveService Status to {}", shouldStart);
             this.ackMessageProcessor.setPopReviveServiceStatus(shouldStart);

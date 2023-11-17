@@ -18,20 +18,6 @@ package org.apache.rocketmq.namesrv.routeinfo;
 
 import com.google.common.collect.Sets;
 import io.netty.channel.Channel;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.LinkedList;
-import java.util.List;
-import java.util.Map;
-import java.util.Map.Entry;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.locks.ReadWriteLock;
-import java.util.concurrent.locks.ReentrantReadWriteLock;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.rocketmq.common.MixAll;
 import org.apache.rocketmq.common.TopicConfig;
@@ -64,6 +50,21 @@ import org.apache.rocketmq.remoting.protocol.route.BrokerData;
 import org.apache.rocketmq.remoting.protocol.route.QueueData;
 import org.apache.rocketmq.remoting.protocol.route.TopicRouteData;
 import org.apache.rocketmq.remoting.protocol.statictopic.TopicQueueMappingInfo;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
+import java.util.Map.Entry;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.locks.ReadWriteLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 public class RouteInfoManager {
     private static final Logger log = LoggerFactory.getLogger(LoggerName.NAMESRV_LOGGER_NAME);
@@ -230,12 +231,14 @@ public class RouteInfoManager {
         try {
             this.lock.writeLock().lockInterruptibly();
 
+            // clusterName -> brokerName
             //init or update the cluster info
             Set<String> brokerNames = ConcurrentHashMapUtils.computeIfAbsent((ConcurrentHashMap<String, Set<String>>) this.clusterAddrTable, clusterName, k -> new HashSet<>());
             brokerNames.add(brokerName);
 
             boolean registerFirst = false;
 
+            // brokerName -> brokerData
             BrokerData brokerData = this.brokerAddrTable.get(brokerName);
             if (null == brokerData) {
                 registerFirst = true;
@@ -292,19 +295,24 @@ public class RouteInfoManager {
             registerFirst = registerFirst || (StringUtils.isEmpty(oldAddr));
 
             boolean isMaster = MixAll.MASTER_ID == brokerId;
+
+            // broker组内最小的slave 可以注册topic配置
             boolean isPrimeSlave = !isOldVersionBroker && !isMaster
                 && brokerId == Collections.min(brokerAddrsMap.keySet());
 
+            // topic -> brokerName -> Topic配置
             if (null != topicConfigWrapper && (isMaster || isPrimeSlave)) {
 
                 ConcurrentMap<String, TopicConfig> tcTable =
                     topicConfigWrapper.getTopicConfigTable();
                 if (tcTable != null) {
                     for (Map.Entry<String, TopicConfig> entry : tcTable.entrySet()) {
+                        // broker首次注册 或 topic配置发生变更
                         if (registerFirst || this.isTopicConfigChanged(clusterName, brokerAddr,
                             topicConfigWrapper.getDataVersion(), brokerName,
                             entry.getValue().getTopicName())) {
                             final TopicConfig topicConfig = entry.getValue();
+                            // 【slaveActingMaster】topic设置为只读
                             if (isPrimeSlave) {
                                 // Wipe write perm for prime slave
                                 topicConfig.setPerm(topicConfig.getPerm() & (~PermName.PERM_WRITE));
@@ -606,13 +614,16 @@ public class RouteInfoManager {
     }
 
     private void cleanTopicByUnRegisterRequests(Set<String> removedBroker, Set<String> reducedBroker) {
-        Iterator<Entry<String, Map<String, QueueData>>> itMap = this.topicQueueTable.entrySet().iterator();
-        while (itMap.hasNext()) {
+        // topic -> brokerName -> Queue
+        Iterator<Entry<String, Map<String, QueueData>>> itMap
+                = this.topicQueueTable.entrySet().iterator();
+        while (itMap.hasNext()) { // 循环topic
             Entry<String, Map<String, QueueData>> entry = itMap.next();
 
             String topic = entry.getKey();
             Map<String, QueueData> queueDataMap = entry.getValue();
 
+            // broker组全体下线，移除Queue
             for (final String brokerName : removedBroker) {
                 final QueueData removedQD = queueDataMap.remove(brokerName);
                 if (removedQD != null) {
@@ -620,15 +631,19 @@ public class RouteInfoManager {
                 }
             }
 
+            // Queue全体下线 topic移除
             if (queueDataMap.isEmpty()) {
                 log.debug("removeTopicByBrokerName, remove the topic all queue {}", topic);
                 itMap.remove();
             }
 
+            // broker组部分下线
             for (final String brokerName : reducedBroker) {
                 final QueueData queueData = queueDataMap.get(brokerName);
 
                 if (queueData != null) {
+                    // SlaveActingMaster模式
+                    // 如果master broker下线，标记queue不可写
                     if (this.brokerAddrTable.get(brokerName).isEnableActingMaster()) {
                         // Master has been unregistered, wipe the write perm
                         if (isNoMasterExists(brokerName)) {
@@ -704,6 +719,7 @@ public class RouteInfoManager {
 
             topicRouteData.setTopicQueueMappingByBroker(this.topicQueueMappingInfoTable.get(topic));
 
+            // 1. nameserver支持slaveActingMaster
             if (!namesrvConfig.isSupportActingMaster()) {
                 return topicRouteData;
             }
@@ -716,6 +732,7 @@ public class RouteInfoManager {
                 return topicRouteData;
             }
 
+            // 2. master下线
             boolean needActingMaster = false;
 
             for (final BrokerData brokerData : topicRouteData.getBrokerDatas()) {
@@ -732,6 +749,7 @@ public class RouteInfoManager {
 
             for (final BrokerData brokerData : topicRouteData.getBrokerDatas()) {
                 final HashMap<Long, String> brokerAddrs = brokerData.getBrokerAddrs();
+                // 3. broker支持slaveActingMaster
                 if (brokerAddrs.size() == 0 || brokerAddrs.containsKey(MixAll.MASTER_ID) || !brokerData.isEnableActingMaster()) {
                     continue;
                 }
@@ -742,6 +760,7 @@ public class RouteInfoManager {
                         if (!PermName.isWriteable(queueData.getPerm())) {
                             final Long minBrokerId = Collections.min(brokerAddrs.keySet());
                             final String actingMasterAddr = brokerAddrs.remove(minBrokerId);
+                            // 【SlaveActingMaster】将master地址替换为代理slave地址
                             brokerAddrs.put(MixAll.MASTER_ID, actingMasterAddr);
                         }
                         break;
@@ -761,10 +780,13 @@ public class RouteInfoManager {
             log.info("start scanNotActiveBroker");
             for (Entry<BrokerAddrInfo, BrokerLiveInfo> next : this.brokerLiveTable.entrySet()) {
                 long last = next.getValue().getLastUpdateTimestamp();
+                // 超时时间？
                 long timeoutMillis = next.getValue().getHeartbeatTimeoutMillis();
                 if ((last + timeoutMillis) < System.currentTimeMillis()) {
+                    // 关闭通讯连接
                     RemotingHelper.closeChannel(next.getValue().getChannel());
                     log.warn("The broker channel expired, {} {}ms", next.getKey(), timeoutMillis);
+                    // 执行broker注销逻辑
                     this.onChannelDestroy(next.getKey());
                 }
             }

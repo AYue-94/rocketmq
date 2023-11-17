@@ -858,6 +858,7 @@ public class CommitLog implements Swappable {
         // SYNC_MASTER
         boolean needHandleHA = needHandleHA(msg);
 
+        // controller模式 quorum write
         if (needHandleHA && this.defaultMessageStore.getBrokerConfig().isEnableControllerMode()) {
             // SyncStateSet.size < minInSyncReplicas(1)
             if (this.defaultMessageStore.getHaService().inSyncReplicasNums(currOffset)
@@ -869,9 +870,13 @@ public class CommitLog implements Swappable {
                 // -1 means all ack in SyncStateSet
                 needAckNums = MixAll.ALL_ACK_IN_SYNC_STATE_SET;
             }
-        } else if (needHandleHA && this.defaultMessageStore.getBrokerConfig().isEnableSlaveActingMaster()) {
+        }
+        // slaveActingMaster模式 quorum write
+        else if (needHandleHA && this.defaultMessageStore.getBrokerConfig().isEnableSlaveActingMaster()) {
+            // inSyncReplicas = min(存活副本数量，追上master的副本数量）
             int inSyncReplicas = Math.min(this.defaultMessageStore.getAliveReplicaNumInGroup(),
                 this.defaultMessageStore.getHaService().inSyncReplicasNums(currOffset));
+            // 计算需要ack的副本数量
             needAckNums = calcNeedAckNums(inSyncReplicas);
             if (needAckNums > inSyncReplicas) {
                 // Tell the producer, don't have enough slaves to handle the send request
@@ -1134,10 +1139,13 @@ public class CommitLog implements Swappable {
         return handleDiskFlushAndHA(putMessageResult, messageExtBatch, needAckNums, needHandleHA);
     }
 
-    private int calcNeedAckNums(int inSyncReplicas) {
+    private int calcNeedAckNums(int inSyncReplicas/*追上master的副本数量*/) {
+        // inSyncReplicas=1
         int needAckNums = this.defaultMessageStore.getMessageStoreConfig().getInSyncReplicas();
+        // enableAutoInSyncReplicas=false
         if (this.defaultMessageStore.getMessageStoreConfig().isEnableAutoInSyncReplicas()) {
             needAckNums = Math.min(needAckNums, inSyncReplicas);
+            // minInSyncReplicas=1
             needAckNums = Math.max(needAckNums, this.defaultMessageStore.getMessageStoreConfig().getMinInSyncReplicas());
         }
         return needAckNums;

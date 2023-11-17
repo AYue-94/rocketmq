@@ -17,15 +17,6 @@
 
 package org.apache.rocketmq.broker.failover;
 
-import java.nio.ByteBuffer;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.rocketmq.broker.BrokerController;
 import org.apache.rocketmq.broker.transaction.queue.TransactionalMessageUtil;
@@ -51,6 +42,16 @@ import org.apache.rocketmq.store.GetMessageStatus;
 import org.apache.rocketmq.store.MessageStore;
 import org.apache.rocketmq.store.PutMessageResult;
 import org.apache.rocketmq.store.PutMessageStatus;
+
+import java.nio.ByteBuffer;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 public class EscapeBridge {
     protected static final Logger LOG = LoggerFactory.getLogger(LoggerName.BROKER_LOGGER_NAME);
@@ -93,10 +94,11 @@ public class EscapeBridge {
     public PutMessageResult putMessage(MessageExtBrokerInner messageExt) {
         BrokerController masterBroker = this.brokerController.peekMasterBroker();
         if (masterBroker != null) {
+            // container模式，优先从当前进程中找master
             return masterBroker.getMessageStore().putMessage(messageExt);
         } else if (this.brokerController.getBrokerConfig().isEnableSlaveActingMaster()
             && this.brokerController.getBrokerConfig().isEnableRemoteEscape()) {
-
+            // 开启enableRemoteEscape，投递到其他master broker，默认未开启
             try {
                 messageExt.setWaitStoreMsgOK(false);
                 final SendResult sendResult = putMessageToRemoteBroker(messageExt);
@@ -159,9 +161,11 @@ public class EscapeBridge {
     public CompletableFuture<PutMessageResult> asyncPutMessage(MessageExtBrokerInner messageExt) {
         BrokerController masterBroker = this.brokerController.peekMasterBroker();
         if (masterBroker != null) {
+            // 本地逃逸
             return masterBroker.getMessageStore().asyncPutMessage(messageExt);
         } else if (this.brokerController.getBrokerConfig().isEnableSlaveActingMaster()
             && this.brokerController.getBrokerConfig().isEnableRemoteEscape()) {
+            // 远程逃逸
             try {
                 messageExt.setWaitStoreMsgOK(false);
 
