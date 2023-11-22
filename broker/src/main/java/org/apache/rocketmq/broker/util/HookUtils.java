@@ -16,10 +16,6 @@
  */
 package org.apache.rocketmq.broker.util;
 
-import java.util.Iterator;
-import java.util.List;
-import java.util.Optional;
-import java.util.concurrent.atomic.AtomicLong;
 import org.apache.rocketmq.broker.BrokerController;
 import org.apache.rocketmq.broker.schedule.ScheduleMessageService;
 import org.apache.rocketmq.common.MixAll;
@@ -39,6 +35,11 @@ import org.apache.rocketmq.store.PutMessageResult;
 import org.apache.rocketmq.store.PutMessageStatus;
 import org.apache.rocketmq.store.config.BrokerRole;
 import org.apache.rocketmq.store.timer.TimerMessageStore;
+
+import java.util.Iterator;
+import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.atomic.AtomicLong;
 
 public class HookUtils {
 
@@ -137,6 +138,7 @@ public class HookUtils {
                         //wheel timer is not enabled, reject the message
                         return new PutMessageResult(PutMessageStatus.WHEEL_TIMER_NOT_ENABLE, null);
                     }
+                    // 新延迟消息转换
                     PutMessageResult transformRes = transformTimerMessage(brokerController, msg);
                     if (null != transformRes) {
                         return transformRes;
@@ -145,6 +147,7 @@ public class HookUtils {
             }
             // Delay Delivery
             if (msg.getDelayTimeLevel() > 0) {
+                // 老延迟消息转换
                 transformDelayLevelMessage(brokerController, msg);
             }
         }
@@ -180,6 +183,7 @@ public class HookUtils {
         MessageExtBrokerInner msg) {
         //do transform
         int delayLevel = msg.getDelayTimeLevel();
+        // 统一api，转换为目标投递时间戳
         long deliverMs;
         try {
             if (msg.getProperty(MessageConst.PROPERTY_TIMER_DELAY_SEC) != null) {
@@ -193,6 +197,7 @@ public class HookUtils {
             return new PutMessageResult(PutMessageStatus.WHEEL_TIMER_MSG_ILLEGAL, null);
         }
         if (deliverMs > System.currentTimeMillis()) {
+            // 延迟最大时间 = timerMaxDelaySec = 3600 * 24 * 3 秒 = 3天
             if (delayLevel <= 0 && deliverMs - System.currentTimeMillis() > brokerController.getMessageStoreConfig().getTimerMaxDelaySec() * 1000L) {
                 return new PutMessageResult(PutMessageStatus.WHEEL_TIMER_MSG_ILLEGAL, null);
             }
@@ -204,6 +209,7 @@ public class HookUtils {
                 deliverMs = deliverMs / timerPrecisionMs * timerPrecisionMs;
             }
 
+            // 流控
             if (brokerController.getTimerMessageStore().isReject(deliverMs)) {
                 return new PutMessageResult(PutMessageStatus.WHEEL_TIMER_FLOW_CONTROL, null);
             }
@@ -211,7 +217,7 @@ public class HookUtils {
             MessageAccessor.putProperty(msg, MessageConst.PROPERTY_REAL_TOPIC, msg.getTopic());
             MessageAccessor.putProperty(msg, MessageConst.PROPERTY_REAL_QUEUE_ID, String.valueOf(msg.getQueueId()));
             msg.setPropertiesString(MessageDecoder.messageProperties2String(msg.getProperties()));
-            msg.setTopic(TimerMessageStore.TIMER_TOPIC);
+            msg.setTopic(TimerMessageStore.TIMER_TOPIC); // rmq_sys_wheel_timer
             msg.setQueueId(0);
         } else if (null != msg.getProperty(MessageConst.PROPERTY_TIMER_DEL_UNIQKEY)) {
             return new PutMessageResult(PutMessageStatus.WHEEL_TIMER_MSG_ILLEGAL, null);

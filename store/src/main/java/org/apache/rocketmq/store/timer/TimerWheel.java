@@ -49,9 +49,12 @@ public class TimerWheel {
     private final int wheelLength;
 
     public TimerWheel(String fileName, int slotsTotal, int precisionMs) throws IOException {
+        // slot数量 = 7 * 24 * 3600 --- 七天的秒数
         this.slotsTotal = slotsTotal;
+        // 每个slot代表1s
         this.precisionMs = precisionMs;
         this.fileName = fileName;
+        // 文件大小，7 * 24 * 3600 * 2 * 32 = 37MB
         this.wheelLength = this.slotsTotal * 2 * Slot.SIZE;
 
         File file = new File(fileName);

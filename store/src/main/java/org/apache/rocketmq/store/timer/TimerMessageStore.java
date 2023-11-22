@@ -17,30 +17,6 @@
 package org.apache.rocketmq.store.timer;
 
 import com.conversantmedia.util.concurrent.DisruptorBlockingQueue;
-import java.io.File;
-import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.sql.Timestamp;
-import java.text.SimpleDateFormat;
-import java.util.ArrayList;
-import java.util.Date;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.LinkedList;
-import java.util.List;
-import java.util.Map;
-import java.util.Random;
-import java.util.Set;
-import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.ConcurrentSkipListSet;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.Executors;
-import java.util.concurrent.LinkedBlockingDeque;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.Function;
 import org.apache.commons.collections.CollectionUtils;
 import org.apache.rocketmq.common.ServiceThread;
 import org.apache.rocketmq.common.ThreadFactoryImpl;
@@ -67,6 +43,31 @@ import org.apache.rocketmq.store.logfile.MappedFile;
 import org.apache.rocketmq.store.metrics.DefaultStoreMetricsManager;
 import org.apache.rocketmq.store.stats.BrokerStatsManager;
 import org.apache.rocketmq.store.util.PerfCounter;
+
+import java.io.File;
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.sql.Timestamp;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
+import java.util.Random;
+import java.util.Set;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ConcurrentSkipListSet;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingDeque;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Function;
 
 public class TimerMessageStore {
     public static final String TIMER_TOPIC = TopicValidator.SYSTEM_TOPIC_PREFIX + "wheel_timer";
@@ -610,6 +611,7 @@ public class TimerMessageStore {
         if (!isRunningEnqueue()) {
             return false;
         }
+        // rmq_sys_wheel_timer
         ConsumeQueue cq = (ConsumeQueue) this.messageStore.getConsumeQueue(TIMER_TOPIC, queueId);
         if (null == cq) {
             return false;
@@ -619,6 +621,7 @@ public class TimerMessageStore {
             currQueueOffset = cq.getMinOffsetInQueue();
         }
         long offset = currQueueOffset;
+        // 根据逻辑offset查询consumequeue
         SelectMappedBufferResult bufferCQ = cq.getIndexBuffer(offset);
         if (null == bufferCQ) {
             return false;
@@ -631,6 +634,7 @@ public class TimerMessageStore {
                     long offsetPy = bufferCQ.getByteBuffer().getLong();
                     int sizePy = bufferCQ.getByteBuffer().getInt();
                     bufferCQ.getByteBuffer().getLong(); //tags code
+                    // 找到目标消息
                     MessageExt msgExt = getMessageByCommitOffset(offsetPy, sizePy);
                     if (null == msgExt) {
                         perfs.getCounter("enqueue_get_miss");
@@ -640,6 +644,7 @@ public class TimerMessageStore {
                         long delayedTime = Long.parseLong(msgExt.getProperty(TIMER_OUT_MS));
                         // use CQ offset, not offset in Message
                         msgExt.setQueueOffset(offset + (i / ConsumeQueue.CQ_STORE_UNIT_SIZE));
+                        // 构建TimerRequest，投递到enqueuePutQueue ---> TimerEnqueuePutService线程
                         TimerRequest timerRequest = new TimerRequest(offsetPy, sizePy, delayedTime, System.currentTimeMillis(), MAGIC_DEFAULT, msgExt);
                         while (true) {
                             if (enqueuePutQueue.offer(timerRequest, 3, TimeUnit.SECONDS)) {
@@ -856,6 +861,7 @@ public class TimerMessageStore {
             return -1;
         }
 
+        // 根据时间，定位一个slot
         Slot slot = timerWheel.getSlot(currReadTimeMs);
         if (-1 == slot.timeMs) {
             moveReadTime();
@@ -874,6 +880,7 @@ public class TimerMessageStore {
             //read the timer log one by one
             while (currOffsetPy != -1) {
                 perfs.startTick("dequeue_read_timerlog");
+                // 从timerLog读取buffer
                 if (null == timeSbr || timeSbr.getStartOffset() > currOffsetPy) {
                     timeSbr = timerLog.getWholeBuffer(currOffsetPy);
                     if (null != timeSbr) {
@@ -1309,8 +1316,10 @@ public class TimerMessageStore {
                                 perfs.startTick("enqueue_put");
                                 DefaultStoreMetricsManager.incTimerEnqueueCount(getRealTopic(req.getMsg()));
                                 if (shouldRunningDequeue && req.getDelayTime() < currWriteTimeMs) {
+                                    // 到期 ---> TimerDequeuePutMessageService线程
                                     dequeuePutQueue.put(req);
                                 } else {
+                                    // 未到期 ---> 投递到timerWheel
                                     boolean doEnqueueRes = doEnqueue(req.getOffsetPy(), req.getSizePy(), req.getDelayTime(), req.getMsg());
                                     req.idempotentRelease(doEnqueueRes || storeConfig.isTimerSkipUnknownError());
                                 }
@@ -1485,6 +1494,7 @@ public class TimerMessageStore {
                         boolean doRes = false;
                         try {
                             long start = System.currentTimeMillis();
+                            // 查询目标消息
                             MessageExt msgExt = getMessageByCommitOffset(tr.getOffsetPy(), tr.getSizePy());
                             if (null != msgExt) {
                                 if (needDelete(tr.getMagic()) && !needRoll(tr.getMagic())) {
@@ -1613,7 +1623,7 @@ public class TimerMessageStore {
                             enqueuePutQueue.size(), dequeueGetQueue.size(), dequeuePutQueue.size(), getAllCongestNum(), format(lastEnqueueButExpiredStoreTime));
                     }
                     timerMetrics.persist();
-                    waitForRunning(storeConfig.getTimerFlushIntervalMs());
+                    waitForRunning(storeConfig.getTimerFlushIntervalMs()); // 1s
                 } catch (Throwable e) {
                     TimerMessageStore.LOGGER.error("Error occurred in " + getServiceName(), e);
                 }
@@ -1631,13 +1641,18 @@ public class TimerMessageStore {
     }
 
     public boolean isReject(long deliverTimeMs) {
+        // 当前所属slot中延迟消息数量
         long congestNum = timerWheel.getNum(deliverTimeMs);
+        // timerCongestNumEachSlot = Integer.MAX_VALUE
+        // 小于阈值，放行
         if (congestNum <= storeConfig.getTimerCongestNumEachSlot()) {
             return false;
         }
+        // 超出2倍阈值，直接拒绝
         if (congestNum >= storeConfig.getTimerCongestNumEachSlot() * 2L) {
             return true;
         }
+        // 1-2倍阈值之间，概率拒绝
         if (RANDOM.nextInt(1000) > 1000 * (congestNum - storeConfig.getTimerCongestNumEachSlot()) / (storeConfig.getTimerCongestNumEachSlot() + 0.1)) {
             return true;
         }

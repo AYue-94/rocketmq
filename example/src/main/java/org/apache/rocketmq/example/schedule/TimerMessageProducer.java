@@ -16,10 +16,11 @@
  */
 package org.apache.rocketmq.example.schedule;
 
-import java.nio.charset.StandardCharsets;
 import org.apache.rocketmq.client.producer.DefaultMQProducer;
 import org.apache.rocketmq.client.producer.SendResult;
 import org.apache.rocketmq.common.message.Message;
+
+import java.nio.charset.StandardCharsets;
 
 public class TimerMessageProducer {
 
@@ -34,7 +35,7 @@ public class TimerMessageProducer {
         DefaultMQProducer producer = new DefaultMQProducer(PRODUCER_GROUP);
 
         // Uncomment the following line while debugging, namesrvAddr should be set to your local address
-//        producer.setNamesrvAddr(DEFAULT_NAMESRVADDR);
+        producer.setNamesrvAddr(DEFAULT_NAMESRVADDR);
 
         // Launch producer
         producer.start();
