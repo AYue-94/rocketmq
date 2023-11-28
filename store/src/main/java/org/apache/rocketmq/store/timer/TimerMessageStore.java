@@ -153,7 +153,7 @@ public class TimerMessageStore {
         this.timerLogFileSize = storeConfig.getMappedFileSizeTimerLog();
         this.precisionMs = storeConfig.getTimerPrecisionMs();
         // TimerWheel contains the fixed number of slots regardless of precision.
-        this.slotsTotal = TIMER_WHEEL_TTL_DAY * DAY_SECS;
+        this.slotsTotal = TIMER_WHEEL_TTL_DAY/*7天*/ * DAY_SECS;
         this.timerWheel = new TimerWheel(getTimerWheelPath(storeConfig.getStorePathRootDir()),
             this.slotsTotal, precisionMs);
         this.timerLog = new TimerLog(getTimerLogPath(storeConfig.getStorePathRootDir()), timerLogFileSize);
@@ -192,7 +192,7 @@ public class TimerMessageStore {
         for (int i = 0; i < dequeueGetMessageServices.length; i++) {
             dequeueGetMessageServices[i] = new TimerDequeueGetMessageService();
         }
-        int putThreadNum = storeConfig.getTimerPutMessageThreadNum();
+        int putThreadNum = storeConfig.getTimerPutMessageThreadNum(); // 3
         if (putThreadNum <= 0) {
             putThreadNum = 1;
         }
@@ -248,19 +248,21 @@ public class TimerMessageStore {
     }
 
     public void recover() {
-        //recover timerLog
+        // S1，根据checkpoint的timerLog刷盘进度，往前推100M
+        // 恢复timerlog和timerWheel
+        // 返回timerLog的当前进度
         long lastFlushPos = timerCheckpoint.getLastTimerLogFlushPos();
         MappedFile lastFile = timerLog.getMappedFileQueue().getLastMappedFile();
         if (null != lastFile) {
-            lastFlushPos = lastFlushPos - lastFile.getFileSize();
+            lastFlushPos = lastFlushPos - lastFile.getFileSize(); // flushPos - 100M
         }
         if (lastFlushPos < 0) {
             lastFlushPos = 0;
         }
         long processOffset = recoverAndRevise(lastFlushPos, true);
-
         timerLog.getMappedFileQueue().setFlushedWhere(processOffset);
-        //revise queue offset
+
+        // S2，根据timerLog刷盘进度，修正wheel_timer消费进度（#7480）
         long queueOffset = reviseQueueOffset(processOffset);
         if (-1 == queueOffset) {
             currQueueOffset = timerCheckpoint.getLastTimerQueueOffset();
@@ -270,6 +272,8 @@ public class TimerMessageStore {
         currQueueOffset = Math.min(currQueueOffset, timerCheckpoint.getMasterTimerQueueOffset());
 
         //check timer wheel
+
+        // S3，恢复时间轮处理时间currReadTimeMs
         currReadTimeMs = timerCheckpoint.getLastReadTimeMs();
         long nextReadTimeMs = formatTimeMs(System.currentTimeMillis()) - slotsTotal * precisionMs + TIMER_BLANK_SLOTS * precisionMs;
         if (currReadTimeMs < nextReadTimeMs) {
@@ -296,6 +300,7 @@ public class TimerMessageStore {
     }
 
     public long reviseQueueOffset(long processOffset) {
+        // 1. 从timerLog读取最后一条记录
         SelectMappedBufferResult selectRes = timerLog.getTimerMessage(processOffset - (TimerLog.UNIT_SIZE - TimerLog.UNIT_PRE_SIZE_FOR_MSG));
         if (null == selectRes) {
             return -1;
@@ -303,6 +308,7 @@ public class TimerMessageStore {
         try {
             long offsetPy = selectRes.getByteBuffer().getLong();
             int sizePy = selectRes.getByteBuffer().getInt();
+            // 2. 从commitlog读取对应消息
             MessageExt messageExt = getMessageByCommitOffset(offsetPy, sizePy);
             if (null == messageExt) {
                 return -1;
@@ -312,6 +318,7 @@ public class TimerMessageStore {
             // if not, use cq offset.
             long msgQueueOffset = messageExt.getQueueOffset();
             int queueId = messageExt.getQueueId();
+            // 3. 找到ConsumeQueue
             ConsumeQueue cq = (ConsumeQueue) this.messageStore.getConsumeQueue(TIMER_TOPIC, queueId);
             if (null == cq) {
                 return msgQueueOffset;
@@ -319,28 +326,31 @@ public class TimerMessageStore {
             long cqOffset = msgQueueOffset;
             long tmpOffset = msgQueueOffset;
             int maxCount = 20000;
+            // 4. TimerLog匹配ConsumeQueue
             while (maxCount-- > 0) {
                 if (tmpOffset < 0) {
                     LOGGER.warn("reviseQueueOffset check cq offset fail, msg in cq is not found.{}, {}",
                         offsetPy, sizePy);
                     break;
                 }
+                // 根据commitlog中的消息的逻辑offset，找consumequeue记录
                 SelectMappedBufferResult bufferCQ = cq.getIndexBuffer(tmpOffset);
                 if (null == bufferCQ) {
                     // offset in msg may be greater than offset of cq.
-                    tmpOffset -= 1;
+                    tmpOffset -= 1; // 向前继续找
                     continue;
                 }
                 try {
                     long offsetPyTemp = bufferCQ.getByteBuffer().getLong();
                     int sizePyTemp = bufferCQ.getByteBuffer().getInt();
+                    // TimerLog记录的消息物理位置 匹配 ConsumeQueue的消息物理位置
                     if (offsetPyTemp == offsetPy && sizePyTemp == sizePy) {
                         LOGGER.info("reviseQueueOffset check cq offset ok. {}, {}, {}",
                             tmpOffset, offsetPyTemp, sizePyTemp);
                         cqOffset = tmpOffset;
                         break;
                     }
-                    tmpOffset -= 1;
+                    tmpOffset -= 1; // 向前继续找
                 } catch (Throwable e) {
                     LOGGER.error("reviseQueueOffset check cq offset error.", e);
                 } finally {
@@ -363,6 +373,7 @@ public class TimerMessageStore {
             return 0;
         }
 
+        // S1，从入参offset开始（checkpoint-100M），找offset所在TimerLog文件，从那个文件开始处理
         List<MappedFile> mappedFiles = timerLog.getMappedFileQueue().getMappedFiles();
         int index = mappedFiles.size() - 1;
         for (; index >= 0; index--) {
@@ -374,13 +385,15 @@ public class TimerMessageStore {
         if (index < 0) {
             index = 0;
         }
+        // S2，循环TimerLog文件
         long checkOffset = mappedFiles.get(index).getFileFromOffset();
         for (; index < mappedFiles.size(); index++) {
             MappedFile mappedFile = mappedFiles.get(index);
             SelectMappedBufferResult sbr = mappedFile.selectMappedBuffer(0, checkTimerLog ? mappedFiles.get(index).getFileSize() : mappedFile.getReadPosition());
             ByteBuffer bf = sbr.getByteBuffer();
-            int position = 0;
+            int position = 0; // TimerLog进度
             boolean stopCheck = false;
+            // 每条TimerLog记录52B
             for (; position < sbr.getSize(); position += TimerLog.UNIT_SIZE) {
                 try {
                     bf.position(position);
@@ -390,12 +403,15 @@ public class TimerMessageStore {
                     if (magic == TimerLog.BLANK_MAGIC_CODE) {
                         break;
                     }
+                    // S2-1，magic为0处理结束
                     if (checkTimerLog && (!isMagicOK(magic) || TimerLog.UNIT_SIZE != size)) {
                         stopCheck = true;
                         break;
                     }
+                    // 恢复delayTime = TimerLog写入时间戳+延迟毫秒数
                     long delayTime = bf.getLong() + bf.getInt();
                     if (TimerLog.UNIT_SIZE == size && isMagicOK(magic)) {
+                        // S2-2，修正delayTime对应Slot的lastPos指向
                         timerWheel.reviseSlot(delayTime, TimerWheel.IGNORE, sbr.getStartOffset() + position, true);
                     }
                 } catch (Exception e) {
@@ -405,15 +421,17 @@ public class TimerMessageStore {
                 }
             }
             sbr.release();
+            // TimerLog实际进度
             checkOffset = mappedFiles.get(index).getFileFromOffset() + position;
             if (stopCheck) {
                 break;
             }
         }
+        // S3，根据TimerLog数据完整情况，截断物理文件
         if (checkTimerLog) {
             timerLog.getMappedFileQueue().truncateDirtyFiles(checkOffset);
         }
-        return checkOffset;
+        return checkOffset; // TimerLog刷盘进度
     }
 
     public static boolean isMagicOK(int magic) {
@@ -535,6 +553,8 @@ public class TimerMessageStore {
     private void checkBrokerRole() {
         BrokerRole currRole = storeConfig.getBrokerRole();
         if (lastBrokerRole != currRole) {
+            // case1 controller模式
+            // case2 4.x DLedgerCommitLog模式
             synchronized (lastBrokerRole) {
                 LOGGER.info("Broker role change from {} to {}", lastBrokerRole, currRole);
                 //if change to master, do something
@@ -553,16 +573,26 @@ public class TimerMessageStore {
     }
 
     private boolean isRunningEnqueue() {
+        // 检测broker角色是否变更
         checkBrokerRole();
-        if (!shouldRunningDequeue && !isMaster() && currQueueOffset >= timerCheckpoint.getMasterTimerQueueOffset()) {
+        // CASE1 不构造时间轮的情况
+        if (!shouldRunningDequeue // slaveActingMaster模式，代理master会变化
+            // slave角色 ---- controller模式/DLedgerCommitLog模式会变化
+            && !isMaster()
+            // 标准slave，slave追上master消费进度
+            && currQueueOffset >= timerCheckpoint.getMasterTimerQueueOffset()) {
             return false;
         }
-
+        // CASE2 构造时间轮的情况
+        // 1 shouldRunningDequeue(代理master或master)
+        // 2 master
+        // 3 标准slave currQueueOffset < master消费进度
         return isRunning();
     }
 
     private boolean isRunningDequeue() {
         if (!this.shouldRunningDequeue) {
+            // slave
             syncLastReadTimeMs();
             return false;
         }
@@ -608,10 +638,11 @@ public class TimerMessageStore {
         if (storeConfig.isTimerStopEnqueue()) {
             return false;
         }
+        // 是否执行enqueue
         if (!isRunningEnqueue()) {
             return false;
         }
-        // rmq_sys_wheel_timer
+        // Step1 查询rmq_sys_wheel_timer的ConsumeQueue
         ConsumeQueue cq = (ConsumeQueue) this.messageStore.getConsumeQueue(TIMER_TOPIC, queueId);
         if (null == cq) {
             return false;
@@ -621,20 +652,21 @@ public class TimerMessageStore {
             currQueueOffset = cq.getMinOffsetInQueue();
         }
         long offset = currQueueOffset;
-        // 根据逻辑offset查询consumequeue
+        // Step2 根据消费进度，拿到ConsumeQueue底层buffer
         SelectMappedBufferResult bufferCQ = cq.getIndexBuffer(offset);
         if (null == bufferCQ) {
             return false;
         }
         try {
             int i = 0;
+            // Step3 循环每条ConsumeQueue记录
             for (; i < bufferCQ.getSize(); i += ConsumeQueue.CQ_STORE_UNIT_SIZE) {
                 perfs.startTick("enqueue_get");
                 try {
-                    long offsetPy = bufferCQ.getByteBuffer().getLong();
-                    int sizePy = bufferCQ.getByteBuffer().getInt();
+                    long offsetPy = bufferCQ.getByteBuffer().getLong(); // commitlog物理offset
+                    int sizePy = bufferCQ.getByteBuffer().getInt(); // commitlog消息大小
                     bufferCQ.getByteBuffer().getLong(); //tags code
-                    // 找到目标消息
+                    // Step3-1 定位到消息
                     MessageExt msgExt = getMessageByCommitOffset(offsetPy, sizePy);
                     if (null == msgExt) {
                         perfs.getCounter("enqueue_get_miss");
@@ -644,9 +676,10 @@ public class TimerMessageStore {
                         long delayedTime = Long.parseLong(msgExt.getProperty(TIMER_OUT_MS));
                         // use CQ offset, not offset in Message
                         msgExt.setQueueOffset(offset + (i / ConsumeQueue.CQ_STORE_UNIT_SIZE));
-                        // 构建TimerRequest，投递到enqueuePutQueue ---> TimerEnqueuePutService线程
+                        // Step3-2 构建TimerRequest，投递到enqueuePutQueue ---> TimerEnqueuePutService线程
                         TimerRequest timerRequest = new TimerRequest(offsetPy, sizePy, delayedTime, System.currentTimeMillis(), MAGIC_DEFAULT, msgExt);
                         while (true) {
+                            // Step3-3 入队enqueuePutQueue
                             if (enqueuePutQueue.offer(timerRequest, 3, TimeUnit.SECONDS)) {
                                 break;
                             }
@@ -686,14 +719,17 @@ public class TimerMessageStore {
         LOGGER.debug("Do enqueue [{}] [{}]", new Timestamp(delayedTime), messageExt);
         //copy the value first, avoid concurrent problem
         long tmpWriteTimeMs = currWriteTimeMs;
+        // timerRollWindowSlots槽位最多2天，超过2天的延迟，需要滚动
         boolean needRoll = delayedTime - tmpWriteTimeMs >= timerRollWindowSlots * precisionMs;
         int magic = MAGIC_DEFAULT;
-        if (needRoll) {
+        if (needRoll) { // 如果需要滚动，确定延迟时间在哪个slot
             magic = magic | MAGIC_ROLL;
             if (delayedTime - tmpWriteTimeMs - timerRollWindowSlots * precisionMs < timerRollWindowSlots / 3 * precisionMs) {
+                // 2天-2.66天 ---> 槽位延迟时间=1天
                 //give enough time to next roll
                 delayedTime = tmpWriteTimeMs + (timerRollWindowSlots / 2) * precisionMs;
             } else {
+                // 2.66天-3天 ---> 槽位延迟时间=2天
                 delayedTime = tmpWriteTimeMs + timerRollWindowSlots * precisionMs;
             }
         }
@@ -702,22 +738,25 @@ public class TimerMessageStore {
             magic = magic | MAGIC_DELETE;
         }
         String realTopic = messageExt.getProperty(MessageConst.PROPERTY_REAL_TOPIC);
+        // 定位时间轮slot
         Slot slot = timerWheel.getSlot(delayedTime);
         ByteBuffer tmpBuffer = timerLogBuffer;
         tmpBuffer.clear();
         tmpBuffer.putInt(TimerLog.UNIT_SIZE); //size
-        tmpBuffer.putLong(slot.lastPos); //prev pos
-        tmpBuffer.putInt(magic); //magic
+        tmpBuffer.putLong(slot.lastPos); //prev pos Slot中上一条TimerLog物理offset
+        tmpBuffer.putInt(magic); //magic 是否滚动 是否删除
         tmpBuffer.putLong(tmpWriteTimeMs); //currWriteTime
         tmpBuffer.putInt((int) (delayedTime - tmpWriteTimeMs)); //delayTime
-        tmpBuffer.putLong(offsetPy); //offset
-        tmpBuffer.putInt(sizePy); //size
+        tmpBuffer.putLong(offsetPy); //offset 消息物理offset
+        tmpBuffer.putInt(sizePy); //size 消息大小
         tmpBuffer.putInt(hashTopicForMetrics(realTopic)); //hashcode of real topic
         tmpBuffer.putLong(0); //reserved value, just set to 0 now
+        // 顺序写timerLog
         long ret = timerLog.append(tmpBuffer.array(), 0, TimerLog.UNIT_SIZE);
         if (-1 != ret) {
             // If it's a delete message, then slot's total num -1
             // TODO: check if the delete msg is in the same slot with "the msg to be deleted".
+            // 写slot
             timerWheel.putSlot(delayedTime, slot.firstPos == -1 ? ret : slot.firstPos, ret,
                 isDelete ? slot.num - 1 : slot.num + 1, slot.magic);
             addMetric(messageExt, isDelete ? -1 : 1);
@@ -871,7 +910,7 @@ public class TimerMessageStore {
             //clear the flag
             dequeueStatusChangeFlag = false;
 
-            long currOffsetPy = slot.lastPos;
+            long currOffsetPy = slot.lastPos; // 从slot中最后一条TimerLog记录开始处理
             Set<String> deleteUniqKeys = new ConcurrentSkipListSet<>();
             LinkedList<TimerRequest> normalMsgStack = new LinkedList<>();
             LinkedList<TimerRequest> deleteMsgStack = new LinkedList<>();
@@ -1041,11 +1080,13 @@ public class TimerMessageStore {
 
         PutMessageResult putMessageResult = null;
         if (escapeBridgeHook != null) {
+            // 二级消息逃逸
             putMessageResult = escapeBridgeHook.apply(message);
         } else {
             putMessageResult = messageStore.putMessage(message);
         }
 
+        // 重试
         int retryNum = 0;
         while (retryNum < 3) {
             if (null == putMessageResult || null == putMessageResult.getPutMessageStatus()) {
@@ -1101,10 +1142,10 @@ public class TimerMessageStore {
 
         msgInner.setWaitStoreMsgOK(false);
 
-        if (needRoll) {
+        if (needRoll) { // 滚动，仍然投递到topic=rmq_sys_wheel_timer,queueId=0
             msgInner.setTopic(msgExt.getTopic());
             msgInner.setQueueId(msgExt.getQueueId());
-        } else {
+        } else { // 到时间了，修改为用户topic和queue
             msgInner.setTopic(msgInner.getProperty(MessageConst.PROPERTY_REAL_TOPIC));
             msgInner.setQueueId(Integer.parseInt(msgInner.getProperty(MessageConst.PROPERTY_REAL_QUEUE_ID)));
             MessageAccessor.clearProperty(msgInner, MessageConst.PROPERTY_REAL_TOPIC);
@@ -1285,9 +1326,10 @@ public class TimerMessageStore {
             TimerMessageStore.LOGGER.info(this.getServiceName() + " service start");
             while (!this.isStopped() || enqueuePutQueue.size() != 0) {
                 try {
+                    // wheel_timer当前消费进度
                     long tmpCommitQueueOffset = currQueueOffset;
                     List<TimerRequest> trs = null;
-                    //collect the requests
+                    // Step1 消费enqueuePutQueue队列中的TimerRequest，合并11个为一批
                     TimerRequest firstReq = enqueuePutQueue.poll(10, TimeUnit.MILLISECONDS);
                     if (null != firstReq) {
                         trs = new ArrayList<>(16);
@@ -1310,6 +1352,7 @@ public class TimerMessageStore {
                     }
                     while (!isStopped()) {
                         CountDownLatch latch = new CountDownLatch(trs.size());
+                        // Step2 处理TimerRequest
                         for (TimerRequest req : trs) {
                             req.setLatch(latch);
                             try {
@@ -1319,7 +1362,7 @@ public class TimerMessageStore {
                                     // 到期 ---> TimerDequeuePutMessageService线程
                                     dequeuePutQueue.put(req);
                                 } else {
-                                    // 未到期 ---> 投递到timerWheel
+                                    // 未到期 ---> 投递到timerWheel（timerLog）
                                     boolean doEnqueueRes = doEnqueue(req.getOffsetPy(), req.getSizePy(), req.getDelayTime(), req.getMsg());
                                     req.idempotentRelease(doEnqueueRes || storeConfig.isTimerSkipUnknownError());
                                 }
@@ -1333,6 +1376,7 @@ public class TimerMessageStore {
                                 }
                             }
                         }
+                        // Step3 等待这批wheel_timer消息处理完毕
                         checkDequeueLatch(latch, -1);
                         boolean allSucc = true;
                         for (TimerRequest tr : trs) {
@@ -1344,6 +1388,8 @@ public class TimerMessageStore {
                             holdMomentForUnknownError();
                         }
                     }
+
+                    // Step4 wheel_timer提交消费进度
                     commitQueueOffset = trs.get(trs.size() - 1).getMsg().getQueueOffset();
                     maybeMoveWriteTime();
                 } catch (Throwable e) {
@@ -1415,6 +1461,7 @@ public class TimerMessageStore {
             while (!this.isStopped() || dequeuePutQueue.size() != 0) {
                 try {
                     setState(AbstractStateService.WAITING);
+                    // 1. 拉TimerRequest
                     TimerRequest tr = dequeuePutQueue.poll(10, TimeUnit.MILLISECONDS);
                     if (null == tr) {
                         continue;
@@ -1433,8 +1480,11 @@ public class TimerMessageStore {
                                 perfs.startTick("dequeue_put");
                                 DefaultStoreMetricsManager.incTimerDequeueCount(getRealTopic(tr.getMsg()));
                                 addMetric(tr.getMsg(), -1);
+                                // 2. 消息转换
                                 MessageExtBrokerInner msg = convert(tr.getMsg(), tr.getEnqueueTime(), needRoll(tr.getMagic()));
+                                // 3. 发送消息
                                 doRes = PUT_NEED_RETRY != doPut(msg, needRoll(tr.getMagic()));
+                                // 重试逻辑
                                 while (!doRes && !isStopped()) {
                                     if (!isRunningDequeue()) {
                                         dequeueStatusChangeFlag = true;
@@ -1484,6 +1534,7 @@ public class TimerMessageStore {
             while (!this.isStopped()) {
                 try {
                     setState(AbstractStateService.WAITING);
+                    // 1. 拉TimerRequest
                     List<TimerRequest> trs = dequeueGetQueue.poll(100 * precisionMs / 1000, TimeUnit.MILLISECONDS);
                     if (null == trs || trs.size() == 0) {
                         continue;
@@ -1494,7 +1545,7 @@ public class TimerMessageStore {
                         boolean doRes = false;
                         try {
                             long start = System.currentTimeMillis();
-                            // 查询目标消息
+                            // 2. 查询目标消息
                             MessageExt msgExt = getMessageByCommitOffset(tr.getOffsetPy(), tr.getSizePy());
                             if (null != msgExt) {
                                 if (needDelete(tr.getMagic()) && !needRoll(tr.getMagic())) {
@@ -1513,6 +1564,7 @@ public class TimerMessageStore {
                                         tr.idempotentRelease();
                                         perfs.getCounter("dequeue_delete").flow(1);
                                     } else {
+                                        // 3. 目标消息注入TimerRequest，放入dequeuePutQueue
                                         tr.setMsg(msgExt);
                                         while (!isStopped() && !doRes) {
                                             doRes = dequeuePutQueue.offer(tr, 3, TimeUnit.SECONDS);
@@ -1606,9 +1658,12 @@ public class TimerMessageStore {
             long start = System.currentTimeMillis();
             while (!this.isStopped()) {
                 try {
+                    // checkpoint内存更新
                     prepareTimerCheckPoint();
+                    // 时间轮刷盘
                     timerLog.getMappedFileQueue().flush(0);
                     timerWheel.flush();
+                    // checkpoint刷盘
                     timerCheckpoint.flush();
                     if (System.currentTimeMillis() - start > storeConfig.getTimerProgressLogIntervalMs()) {
                         start = System.currentTimeMillis();
@@ -1623,7 +1678,8 @@ public class TimerMessageStore {
                             enqueuePutQueue.size(), dequeueGetQueue.size(), dequeuePutQueue.size(), getAllCongestNum(), format(lastEnqueueButExpiredStoreTime));
                     }
                     timerMetrics.persist();
-                    waitForRunning(storeConfig.getTimerFlushIntervalMs()); // 1s
+                    // 每隔1s跑一次
+                    waitForRunning(storeConfig.getTimerFlushIntervalMs());
                 } catch (Throwable e) {
                     TimerMessageStore.LOGGER.error("Error occurred in " + getServiceName(), e);
                 }
@@ -1698,9 +1754,11 @@ public class TimerMessageStore {
     }
 
     public void prepareTimerCheckPoint() {
+        // 时间轮刷盘进度
         timerCheckpoint.setLastTimerLogFlushPos(timerLog.getMappedFileQueue().getFlushedWhere());
+        // 时间轮处理进度
         timerCheckpoint.setLastReadTimeMs(commitReadTimeMs);
-        if (shouldRunningDequeue) {
+        if (shouldRunningDequeue) { // master或代理master
             timerCheckpoint.setMasterTimerQueueOffset(commitQueueOffset);
             if (commitReadTimeMs != lastCommitReadTimeMs || commitQueueOffset != lastCommitQueueOffset) {
                 timerCheckpoint.updateDateVersion(messageStore.getStateMachineVersion());
@@ -1708,6 +1766,7 @@ public class TimerMessageStore {
                 lastCommitQueueOffset = commitQueueOffset;
             }
         }
+        // timer消息消费进度
         timerCheckpoint.setLastTimerQueueOffset(Math.min(commitQueueOffset, timerCheckpoint.getMasterTimerQueueOffset()));
     }
 

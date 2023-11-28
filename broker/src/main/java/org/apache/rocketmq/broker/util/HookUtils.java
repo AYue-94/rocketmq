@@ -202,6 +202,7 @@ public class HookUtils {
                 return new PutMessageResult(PutMessageStatus.WHEEL_TIMER_MSG_ILLEGAL, null);
             }
 
+            // 精度1000ms
             int timerPrecisionMs = brokerController.getMessageStoreConfig().getTimerPrecisionMs();
             if (deliverMs % timerPrecisionMs == 0) {
                 deliverMs -= timerPrecisionMs;
@@ -209,7 +210,7 @@ public class HookUtils {
                 deliverMs = deliverMs / timerPrecisionMs * timerPrecisionMs;
             }
 
-            // 流控
+            // 流控 slot级别 默认Integer.MAX_VALUE
             if (brokerController.getTimerMessageStore().isReject(deliverMs)) {
                 return new PutMessageResult(PutMessageStatus.WHEEL_TIMER_FLOW_CONTROL, null);
             }

@@ -218,7 +218,9 @@ public class SlaveSynchronize {
                 if (null != brokerController.getMessageStore().getTimerMessageStore()) {
                     TimerCheckpoint checkpoint = this.brokerController.getBrokerOuterAPI().getTimerCheckPoint(masterAddrBak);
                     if (null != this.brokerController.getTimerCheckpoint()) {
+                        // 时间轮（timerwheel）处理进度 时间戳
                         this.brokerController.getTimerCheckpoint().setLastReadTimeMs(checkpoint.getLastReadTimeMs());
+                        // 延迟topic(wheel_timer)消费进度
                         this.brokerController.getTimerCheckpoint().setMasterTimerQueueOffset(checkpoint.getMasterTimerQueueOffset());
                     }
                 }

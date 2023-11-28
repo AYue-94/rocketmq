@@ -16,11 +16,11 @@
  */
 package org.apache.rocketmq.store.timer;
 
+import java.io.IOException;
+import java.util.concurrent.TimeUnit;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
-
-import java.io.IOException;
 
 import static org.junit.Assert.assertEquals;
 
@@ -140,6 +140,32 @@ public class TimerWheelTest {
     public void testRecoveryFixedTTL() throws Exception {
         timerWheel.flush();
         TimerWheel tmpWheel = new TimerWheel(baseDir, slotsTotal + 1, precisionMs);
+    }
+
+    @Test
+    public void testExpireData() throws IOException {
+        int slotsTotal = 7 * 24 * 3600; // 7天
+        int precisionMs = 1000; // 1s精度
+        String dir = StoreTestUtils.createBaseDir();
+        TimerWheel tw = new TimerWheel(dir, slotsTotal, precisionMs);
+        // 将当前时间放入时间轮
+        long now = System.currentTimeMillis() / precisionMs * precisionMs;
+        tw.putSlot(now, 1, 2);
+        Slot slot = tw.getSlot(now);
+        assertEquals(now, slot.timeMs);
+        assertEquals(1, slot.firstPos);
+        assertEquals(2, slot.lastPos);
+        // 14天后来取
+        long now_plus14 = now + TimeUnit.DAYS.toMillis(14) / precisionMs * precisionMs;
+        // 处于同一Slot
+        assertEquals(tw.getSlotIndex(now), tw.getSlotIndex(now_plus14));
+        // 查询14天后数据
+        Slot slot14 = tw.getSlot(now_plus14);
+        assertEquals(-1, slot14.timeMs);
+        assertEquals(-1, slot14.lastPos);
+        assertEquals(-1, slot14.firstPos); // 失效
+        tw.shutdown();
+        StoreTestUtils.deleteFile(dir);
     }
 
     @After

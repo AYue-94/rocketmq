@@ -36,9 +36,13 @@ public class TimerCheckpoint {
     private final RandomAccessFile randomAccessFile;
     private final FileChannel fileChannel;
     private final MappedByteBuffer mappedByteBuffer;
+    // 消费时间轮的进度 --- 时间戳
     private volatile long lastReadTimeMs = 0; //if it is slave, need to read from master
+    // TimerLog刷盘进度
     private volatile long lastTimerLogFlushPos = 0;
+    // 延迟topic(wheel_timer)消费进度 --- 当前实例
     private volatile long lastTimerQueueOffset = 0;
+    // 延迟topic(wheel_timer)消费进度 --- master
     private volatile long masterTimerQueueOffset = 0; // read from master
     private final DataVersion dataVersion = new DataVersion();
 

@@ -54,7 +54,7 @@ public class TimerWheel {
         // 每个slot代表1s
         this.precisionMs = precisionMs;
         this.fileName = fileName;
-        // 文件大小，7 * 24 * 3600 * 2 * 32 = 37MB
+        // 文件大小，7 * 24 * 3600 * 2 * 32 = 37MB --- 实际槽位14天
         this.wheelLength = this.slotsTotal * 2 * Slot.SIZE;
 
         File file = new File(fileName);
@@ -117,6 +117,7 @@ public class TimerWheel {
 
     public Slot getSlot(long timeMs) {
         Slot slot = getRawSlot(timeMs);
+        // 如果Slot的时间戳与入参时间戳不同，返回-1
         if (slot.timeMs != timeMs / precisionMs * precisionMs) {
             return new Slot(-1, -1, -1);
         }
@@ -144,11 +145,11 @@ public class TimerWheel {
     }
     public void putSlot(long timeMs, long firstPos, long lastPos, int num, int magic) {
         localBuffer.get().position(getSlotIndex(timeMs) * Slot.SIZE);
-        localBuffer.get().putLong(timeMs / precisionMs);
-        localBuffer.get().putLong(firstPos);
-        localBuffer.get().putLong(lastPos);
-        localBuffer.get().putInt(num);
-        localBuffer.get().putInt(magic);
+        localBuffer.get().putLong(timeMs / precisionMs); // 延迟时间
+        localBuffer.get().putLong(firstPos); // slot中第一个消息对应的timerLog物理offset
+        localBuffer.get().putLong(lastPos); // slot中最后一个消息对应的timerLog物理offset
+        localBuffer.get().putInt(num); // slot中消息数量
+        localBuffer.get().putInt(magic); // 保留位
     }
 
     public void reviseSlot(long timeMs, long firstPos, long lastPos, boolean force) {

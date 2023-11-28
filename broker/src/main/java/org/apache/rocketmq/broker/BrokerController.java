@@ -640,13 +640,13 @@ public class BrokerController {
                     @Override
                     public void run() {
                         try {
-                            if (System.currentTimeMillis() - lastSyncTimeMs > 60 * 1000) {
+                            if (System.currentTimeMillis() - lastSyncTimeMs > 60 * 1000) { // 60s
                                 BrokerController.this.getSlaveSynchronize().syncAll();
                                 lastSyncTimeMs = System.currentTimeMillis();
                             }
                             
                             //timer checkpoint, latency-sensitive, so sync it more frequently
-                            if (messageStoreConfig.isTimerWheelEnable()) {
+                            if (messageStoreConfig.isTimerWheelEnable()) { // 3s
                                 BrokerController.this.getSlaveSynchronize().syncTimerCheckPoint();
                             }
                         } catch (Throwable e) {
