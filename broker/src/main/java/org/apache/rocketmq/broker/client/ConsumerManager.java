@@ -52,16 +52,16 @@ public class ConsumerManager {
     public ConsumerManager(final ConsumerIdsChangeListener consumerIdsChangeListener, long expiredTimeout) {
         this.consumerIdsChangeListenerList.add(consumerIdsChangeListener);
         this.brokerStatsManager = null;
-        this.channelExpiredTimeout = expiredTimeout;
-        this.subscriptionExpiredTimeout = expiredTimeout;
+        this.channelExpiredTimeout = expiredTimeout; // 2min
+        this.subscriptionExpiredTimeout = expiredTimeout; // 2min
     }
 
     public ConsumerManager(final ConsumerIdsChangeListener consumerIdsChangeListener,
         final BrokerStatsManager brokerStatsManager, BrokerConfig brokerConfig) {
         this.consumerIdsChangeListenerList.add(consumerIdsChangeListener);
         this.brokerStatsManager = brokerStatsManager;
-        this.channelExpiredTimeout = brokerConfig.getChannelExpiredTimeout();
-        this.subscriptionExpiredTimeout = brokerConfig.getSubscriptionExpiredTimeout();
+        this.channelExpiredTimeout = brokerConfig.getChannelExpiredTimeout(); // 2min
+        this.subscriptionExpiredTimeout = brokerConfig.getSubscriptionExpiredTimeout(); // 10min
     }
 
     public ClientChannelInfo findChannel(final String group, final String clientId) {
@@ -176,6 +176,8 @@ public class ConsumerManager {
         ConsumeType consumeType, MessageModel messageModel, ConsumeFromWhere consumeFromWhere,
         final Set<SubscriptionData> subList, boolean isNotifyConsumerIdsChangedEnable, boolean updateSubscription) {
         long start = System.currentTimeMillis();
+
+        // 消费组 -> groupInfo
         ConsumerGroupInfo consumerGroupInfo = this.consumerTable.get(group);
         if (null == consumerGroupInfo) {
             callConsumerIdsChangeListener(ConsumerGroupEvent.CLIENT_REGISTER, group, clientChannelInfo,
@@ -185,11 +187,12 @@ public class ConsumerManager {
             consumerGroupInfo = prev != null ? prev : tmp;
         }
 
+        // 更新心跳时间
         boolean r1 =
             consumerGroupInfo.updateChannel(clientChannelInfo, consumeType, messageModel,
                 consumeFromWhere);
         boolean r2 = false;
-        if (updateSubscription) {
+        if (updateSubscription) { // 是否更新订阅情况
             r2 = consumerGroupInfo.updateSubscription(subList);
         }
 

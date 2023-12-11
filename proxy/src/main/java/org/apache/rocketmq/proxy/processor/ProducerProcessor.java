@@ -79,6 +79,8 @@ public class ProducerProcessor extends AbstractProcessor {
                     }
                 }
             }
+
+            // 1. 选queue
             AddressableMessageQueue messageQueue = queueSelector.select(ctx,
                 this.serviceManager.getTopicRouteService().getCurrentMessageQueueView(topic));
             if (messageQueue == null) {
@@ -88,14 +90,18 @@ public class ProducerProcessor extends AbstractProcessor {
             for (Message msg : messageList) {
                 MessageClientIDSetter.setUniqID(msg);
             }
+
+            // 2. 模型转换 -> remoting协议头
             SendMessageRequestHeader requestHeader = buildSendMessageRequestHeader(messageList, producerGroup, sysFlag, messageQueue.getQueueId());
 
+            // 3. 调用queue对应broker，发送消息
             future = this.serviceManager.getMessageService().sendMessage(
                 ctx,
                 messageQueue,
                 messageList,
                 requestHeader,
                 timeoutMillis)
+                // 4. 模型转换
                 .thenApplyAsync(sendResultList -> {
                     for (SendResult sendResult : sendResultList) {
                         int tranType = MessageSysFlag.getTransactionValue(requestHeader.getSysFlag());

@@ -90,14 +90,16 @@ public class ClientActivity extends AbstractMessingActivity {
         CompletableFuture<HeartbeatResponse> future = new CompletableFuture<>();
 
         try {
+            // 1. 根据clientId查询Settings
             Settings clientSettings = grpcClientSettingsManager.getClientSettings(ctx);
-            if (clientSettings == null) {
+            if (clientSettings == null) { // settings不存在，返回异常40015
                 future.complete(HeartbeatResponse.newBuilder()
                     .setStatus(ResponseBuilder.getInstance().buildStatus(Code.UNRECOGNIZED_CLIENT_TYPE, "cannot find client settings for this client"))
                     .build());
                 return future;
             }
             switch (clientSettings.getClientType()) {
+                // 2-1、producer注册
                 case PRODUCER: {
                     for (Resource topic : clientSettings.getPublishing().getTopicsList()) {
                         String topicName = GrpcConverter.getInstance().wrapResourceWithNamespace(topic);
@@ -105,11 +107,13 @@ public class ClientActivity extends AbstractMessingActivity {
                     }
                     break;
                 }
+                // 2-2、consumer注册
                 case PUSH_CONSUMER:
                 case SIMPLE_CONSUMER: {
                     validateConsumerGroup(request.getGroup());
                     String consumerGroup = GrpcConverter.getInstance().wrapResourceWithNamespace(request.getGroup());
-                    this.registerConsumer(ctx, consumerGroup, clientSettings.getClientType(), clientSettings.getSubscription().getSubscriptionsList(), false);
+                    this.registerConsumer(ctx, consumerGroup, clientSettings.getClientType(),
+                        clientSettings.getSubscription().getSubscriptionsList(), false);
                     break;
                 }
                 default: {
@@ -242,14 +246,18 @@ public class ClientActivity extends AbstractMessingActivity {
                 for (Resource topic : settings.getPublishing().getTopicsList()) {
                     validateTopic(topic);
                     String topicName = GrpcConverter.getInstance().wrapResourceWithNamespace(topic);
+                    // 注册
                     grpcClientChannel = registerProducer(ctx, topicName);
+                    // 注入输出流
                     grpcClientChannel.setClientObserver(responseObserver);
                 }
                 break;
             case SUBSCRIPTION:
                 validateConsumerGroup(settings.getSubscription().getGroup());
                 String groupName = GrpcConverter.getInstance().wrapResourceWithNamespace(settings.getSubscription().getGroup());
+                // 注册（会更新订阅关系）
                 grpcClientChannel = registerConsumer(ctx, groupName, settings.getClientType(), settings.getSubscription().getSubscriptionsList(), true);
+                // 注入输出流
                 grpcClientChannel.setClientObserver(responseObserver);
                 break;
             default:
@@ -261,8 +269,10 @@ public class ClientActivity extends AbstractMessingActivity {
                 .asRuntimeException());
             return;
         }
+        // 处理Settings
         TelemetryCommand command = processClientSettings(ctx, request);
         if (grpcClientChannel != null) {
+            // 将处理后的Settings返回客户端
             grpcClientChannel.writeTelemetryCommand(command);
         } else {
             responseObserver.onNext(command);
@@ -271,8 +281,11 @@ public class ClientActivity extends AbstractMessingActivity {
 
     protected TelemetryCommand processClientSettings(ProxyContext ctx, TelemetryCommand request) {
         String clientId = ctx.getClientID();
+        // 更新内存中客户端Settings
         grpcClientSettingsManager.updateClientSettings(clientId, request.getSettings());
+        // 获取合并后的Settings
         Settings settings = grpcClientSettingsManager.getClientSettings(ctx);
+        // 返回合并后的Settings给客户端
         return TelemetryCommand.newBuilder()
             .setStatus(ResponseBuilder.getInstance().buildStatus(Code.OK, Code.OK.name()))
             .setSettings(settings)
@@ -283,10 +296,15 @@ public class ClientActivity extends AbstractMessingActivity {
         String clientId = ctx.getClientID();
         LanguageCode languageCode = LanguageCode.valueOf(ctx.getLanguage());
 
+        // 1. 模型转换（适配原始remoting协议）
         GrpcClientChannel channel = this.grpcChannelManager.createChannel(ctx, clientId);
         // use topic name as producer group
         ClientChannelInfo clientChannelInfo = new ClientChannelInfo(channel, clientId, languageCode, parseClientVersion(ctx.getClientVersion()));
+
+        // 2. 走broker的ProducerManager 存储group->channel->ClientChannelInfo
         this.messagingProcessor.registerProducer(ctx, topicName, clientChannelInfo);
+
+        // 3. 事务消息特殊处理
         TopicMessageType topicMessageType = this.messagingProcessor.getMetadataService().getTopicMessageType(topicName);
         if (TopicMessageType.TRANSACTION.equals(topicMessageType)) {
             this.messagingProcessor.addTransactionSubscription(ctx, topicName, topicName);
@@ -299,9 +317,11 @@ public class ClientActivity extends AbstractMessingActivity {
         String clientId = ctx.getClientID();
         LanguageCode languageCode = LanguageCode.valueOf(ctx.getLanguage());
 
+        // 1. 模型适配remoting协议
         GrpcClientChannel channel = this.grpcChannelManager.createChannel(ctx, clientId);
         ClientChannelInfo clientChannelInfo = new ClientChannelInfo(channel, clientId, languageCode, parseClientVersion(ctx.getClientVersion()));
 
+        // 2. 注册
         this.messagingProcessor.registerConsumer(
             ctx,
             consumerGroup,

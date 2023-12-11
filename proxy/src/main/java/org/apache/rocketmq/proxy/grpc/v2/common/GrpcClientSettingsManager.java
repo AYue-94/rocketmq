@@ -67,7 +67,9 @@ public class GrpcClientSettingsManager extends ServiceThread implements StartAnd
     }
 
     public Settings getClientSettings(ProxyContext ctx) {
+        // 每次客户端请求都会携带clientId
         String clientId = ctx.getClientID();
+        // 获取缓存中的Settings
         Settings settings = CLIENT_SETTINGS_MAP.get(clientId);
         if (settings == null) {
             return null;
@@ -78,19 +80,23 @@ public class GrpcClientSettingsManager extends ServiceThread implements StartAnd
             settings = mergeSubscriptionData(ctx, settings,
                 GrpcConverter.getInstance().wrapResourceWithNamespace(settings.getSubscription().getGroup()));
         }
+        // 默认未开启metrics，忽略
         return mergeMetric(settings);
     }
 
     protected static Settings mergeProducerData(Settings settings) {
+        // proxy端配置
         ProxyConfig config = ConfigurationManager.getProxyConfig();
+        // producer端配置
         Settings.Builder builder = settings.toBuilder();
 
+        // 用proxy端配置，覆盖producer端配置
         builder.getBackoffPolicyBuilder()
-            .setMaxAttempts(config.getGrpcClientProducerMaxAttempts())
-            .setExponentialBackoff(ExponentialBackoff.newBuilder()
-                .setInitial(Durations.fromMillis(config.getGrpcClientProducerBackoffInitialMillis()))
-                .setMax(Durations.fromMillis(config.getGrpcClientProducerBackoffMaxMillis()))
-                .setMultiplier(config.getGrpcClientProducerBackoffMultiplier())
+            .setMaxAttempts(config.getGrpcClientProducerMaxAttempts()) // 3次
+            .setExponentialBackoff(ExponentialBackoff.newBuilder() // 指数后退重试策略
+                .setInitial(Durations.fromMillis(config.getGrpcClientProducerBackoffInitialMillis())) // 10ms
+                .setMax(Durations.fromMillis(config.getGrpcClientProducerBackoffMaxMillis())) // 1s
+                .setMultiplier(config.getGrpcClientProducerBackoffMultiplier()) // 2
                 .build());
 
         builder.getPublishingBuilder()
@@ -100,11 +106,15 @@ public class GrpcClientSettingsManager extends ServiceThread implements StartAnd
     }
 
     protected Settings mergeSubscriptionData(ProxyContext ctx, Settings settings, String consumerGroup) {
+
+        // 1. 查询消费组配置
+        // caffeine(local) -> nameserver(clusterTopic->broker) + broker -> config
         SubscriptionGroupConfig config = this.messagingProcessor.getSubscriptionGroupConfig(ctx, consumerGroup);
         if (config == null) {
             return settings;
         }
 
+        // 2. 合并
         return mergeSubscriptionData(settings, config);
     }
 
@@ -137,8 +147,12 @@ public class GrpcClientSettingsManager extends ServiceThread implements StartAnd
         return settings.toBuilder().setMetric(metric).build();
     }
 
-    protected static Settings mergeSubscriptionData(Settings settings, SubscriptionGroupConfig groupConfig) {
+    protected static Settings mergeSubscriptionData(Settings settings,
+        // broker subscriptionGroup.json
+        SubscriptionGroupConfig groupConfig) {
+        // consumer settings
         Settings.Builder resultSettingsBuilder = settings.toBuilder();
+        // proxy config
         ProxyConfig config = ConfigurationManager.getProxyConfig();
 
         resultSettingsBuilder.getSubscriptionBuilder()

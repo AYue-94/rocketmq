@@ -113,9 +113,9 @@ public class ProxyStartup {
         if (StringUtils.isNotBlank(commandLineArgument.getProxyConfigPath())) {
             System.setProperty(Configuration.CONFIG_PATH_PROPERTY, commandLineArgument.getProxyConfigPath());
         }
-        ConfigurationManager.initEnv();
-        ConfigurationManager.intConfig();
-        setConfigFromCommandLineArgument(commandLineArgument);
+        ConfigurationManager.initEnv(); // proxyHome
+        ConfigurationManager.intConfig(); // ProxyConfig
+        setConfigFromCommandLineArgument(commandLineArgument); // 命令行覆盖ProxyConfig
         log.info("Current configuration: " + ConfigurationManager.formatProxyConfig());
 
     }
@@ -166,17 +166,17 @@ public class ProxyStartup {
         String proxyModeStr = ConfigurationManager.getProxyConfig().getProxyMode();
         MessagingProcessor messagingProcessor;
 
-        if (ProxyMode.isClusterMode(proxyModeStr)) {
+        if (ProxyMode.isClusterMode(proxyModeStr)) { // cluster模式
             messagingProcessor = DefaultMessagingProcessor.createForClusterMode();
             ProxyMetricsManager proxyMetricsManager = ProxyMetricsManager.initClusterMode(ConfigurationManager.getProxyConfig());
             PROXY_START_AND_SHUTDOWN.appendStartAndShutdown(proxyMetricsManager);
-        } else if (ProxyMode.isLocalMode(proxyModeStr)) {
+        } else if (ProxyMode.isLocalMode(proxyModeStr)) { // local模式
             BrokerController brokerController = createBrokerController();
             ProxyMetricsManager.initLocalMode(brokerController.getBrokerMetricsManager(), ConfigurationManager.getProxyConfig());
             StartAndShutdown brokerControllerWrapper = new StartAndShutdown() {
                 @Override
                 public void start() throws Exception {
-                    brokerController.start();
+                    brokerController.start(); // 启动broker
                     String tip = "The broker[" + brokerController.getBrokerConfig().getBrokerName() + ", "
                         + brokerController.getBrokerAddr() + "] boot success. serializeType=" + RemotingCommand.getSerializeTypeConfigInThisServer();
                     if (null != brokerController.getBrokerConfig().getNamesrvAddr()) {

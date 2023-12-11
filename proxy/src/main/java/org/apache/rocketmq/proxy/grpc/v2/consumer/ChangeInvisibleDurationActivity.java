@@ -55,10 +55,12 @@ public class ChangeInvisibleDurationActivity extends AbstractMessingActivity {
             ReceiptHandle receiptHandle = ReceiptHandle.decode(request.getReceiptHandle());
             String group = GrpcConverter.getInstance().wrapResourceWithNamespace(request.getGroup());
 
+            // 1. 移除缓存handle，renew逻辑
             MessageReceiptHandle messageReceiptHandle = receiptHandleProcessor.removeReceiptHandle(grpcChannelManager.getChannel(ctx.getClientID()), group, request.getMessageId(), receiptHandle.getReceiptHandle());
             if (messageReceiptHandle != null) {
                 receiptHandle = ReceiptHandle.decode(messageReceiptHandle.getReceiptHandleStr());
             }
+            // 2. remoting协议 调用broker changeInvisibleTime
             return this.messagingProcessor.changeInvisibleTime(
                 ctx,
                 receiptHandle,

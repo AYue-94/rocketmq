@@ -39,30 +39,35 @@ import org.apache.rocketmq.common.ThreadFactoryImpl;
 import org.apache.rocketmq.common.constant.LoggerName;
 import org.apache.rocketmq.common.consumer.ReceiptHandle;
 import org.apache.rocketmq.common.thread.ThreadPoolMonitor;
-import org.apache.rocketmq.common.utils.ConcurrentHashMapUtils;
 import org.apache.rocketmq.common.utils.AbstractStartAndShutdown;
+import org.apache.rocketmq.common.utils.ConcurrentHashMapUtils;
+import org.apache.rocketmq.common.utils.StartAndShutdown;
+import org.apache.rocketmq.logging.org.slf4j.Logger;
+import org.apache.rocketmq.logging.org.slf4j.LoggerFactory;
 import org.apache.rocketmq.proxy.common.MessageReceiptHandle;
 import org.apache.rocketmq.proxy.common.ProxyContext;
 import org.apache.rocketmq.proxy.common.ProxyException;
 import org.apache.rocketmq.proxy.common.ProxyExceptionCode;
 import org.apache.rocketmq.proxy.common.ReceiptHandleGroup;
 import org.apache.rocketmq.proxy.common.RenewStrategyPolicy;
-import org.apache.rocketmq.common.utils.StartAndShutdown;
 import org.apache.rocketmq.proxy.common.channel.ChannelHelper;
 import org.apache.rocketmq.proxy.common.utils.ExceptionUtils;
 import org.apache.rocketmq.proxy.config.ConfigurationManager;
 import org.apache.rocketmq.proxy.config.ProxyConfig;
 import org.apache.rocketmq.remoting.protocol.subscription.RetryPolicy;
 import org.apache.rocketmq.remoting.protocol.subscription.SubscriptionGroupConfig;
-import org.apache.rocketmq.logging.org.slf4j.Logger;
-import org.apache.rocketmq.logging.org.slf4j.LoggerFactory;
 
 public class ReceiptHandleProcessor extends AbstractStartAndShutdown {
     protected final static Logger log = LoggerFactory.getLogger(LoggerName.PROXY_LOGGER_NAME);
+    // handle缓存
+    // channel+group -> ReceiptHandleGroup = Map<String /* msgID */, Map<String /* original handle */, HandleData>>
     protected final ConcurrentMap<ReceiptHandleGroupKey, ReceiptHandleGroup> receiptHandleGroupMap;
+    // 扫描handle线程
     protected final ScheduledExecutorService scheduledExecutorService =
         Executors.newSingleThreadScheduledExecutor(new ThreadFactoryImpl("RenewalScheduledThread_"));
+    // 执行renew的线程
     protected ThreadPoolExecutor renewalWorkerService;
+
     protected final MessagingProcessor messagingProcessor;
     protected final static RetryPolicy RENEW_POLICY = new RenewStrategyPolicy();
 
@@ -86,6 +91,7 @@ public class ReceiptHandleProcessor extends AbstractStartAndShutdown {
         this.appendStartAndShutdown(new StartAndShutdown() {
             @Override
             public void start() throws Exception {
+                // 5s扫描一次handle
                 scheduledExecutorService.scheduleWithFixedDelay(() -> scheduleRenewTask(), 0,
                     ConfigurationManager.getProxyConfig().getRenewSchedulePeriodMillis(), TimeUnit.MILLISECONDS);
             }
@@ -129,24 +135,31 @@ public class ReceiptHandleProcessor extends AbstractStartAndShutdown {
         return ProxyContext.createForInner(this.getClass().getSimpleName() + actionName);
     }
 
-    protected void scheduleRenewTask() {
+    protected void scheduleRenewTask() { // 5s跑一次
         Stopwatch stopwatch = Stopwatch.createStarted();
         try {
             ProxyConfig proxyConfig = ConfigurationManager.getProxyConfig();
+            // channel+group -> ReceiptHandleGroup
             for (Map.Entry<ReceiptHandleGroupKey, ReceiptHandleGroup> entry : receiptHandleGroupMap.entrySet()) {
                 ReceiptHandleGroupKey key = entry.getKey();
+                // 根据channel + group找consumer心跳
                 if (clientIsOffline(key)) {
+                    // 如果consumer心跳不存在，清空handle，对于所有handle执行changeInvisibleTime
                     clearGroup(key);
                     continue;
                 }
 
                 ReceiptHandleGroup group = entry.getValue();
+                // msgId -> handle -> MessageReceiptHandle
                 group.scan((msgID, handleStr, v) -> {
                     long current = System.currentTimeMillis();
                     ReceiptHandle handle = ReceiptHandle.decode(v.getReceiptHandleStr());
-                    if (handle.getNextVisibleTime() - current > proxyConfig.getRenewAheadTimeMillis()) {
+                    // 判断是否执行renew
+                    if (handle.getNextVisibleTime() - current > proxyConfig.getRenewAheadTimeMillis()/*10s*/) {
                         return;
                     }
+                    // pop消息再次可见之前10秒（一般就是50秒左右未ack或主动nack），进行renew
+                    // pop时间 + invisible时间 - 当前时间 <= 10s
                     renewalWorkerService.submit(() -> renewMessage(group, msgID, handleStr));
                 });
             }
@@ -172,10 +185,12 @@ public class ReceiptHandleProcessor extends AbstractStartAndShutdown {
         ReceiptHandle handle = ReceiptHandle.decode(messageReceiptHandle.getReceiptHandleStr());
         long current = System.currentTimeMillis();
         try {
+            // renew>=3次结束
             if (messageReceiptHandle.getRenewRetryTimes() >= proxyConfig.getMaxRenewRetryTimes()) {
                 log.warn("handle has exceed max renewRetryTimes. handle:{}", messageReceiptHandle);
                 return CompletableFuture.completedFuture(null);
             }
+            // 当前时间 - pop时间 < 3小时
             if (current - messageReceiptHandle.getConsumeTimestamp() < proxyConfig.getRenewMaxTimeMillis()) {
                 CompletableFuture<AckResult> future =
                     messagingProcessor.changeInvisibleTime(context, handle, messageReceiptHandle.getMessageId(),
@@ -190,6 +205,7 @@ public class ReceiptHandleProcessor extends AbstractStartAndShutdown {
                             resFuture.complete(null);
                         }
                     } else if (AckStatus.OK.equals(ackResult.getStatus())) {
+                        // 更新handle
                         messageReceiptHandle.updateReceiptHandle(ackResult.getExtraInfo());
                         messageReceiptHandle.resetRenewRetryTimes();
                         messageReceiptHandle.incrementRenewTimes();
@@ -199,7 +215,7 @@ public class ReceiptHandleProcessor extends AbstractStartAndShutdown {
                         resFuture.complete(null);
                     }
                 });
-            } else {
+            } else { // 当前时间 - pop时间 > 3小时
                 SubscriptionGroupConfig subscriptionGroupConfig =
                     messagingProcessor.getMetadataService().getSubscriptionGroupConfig(messageReceiptHandle.getGroup());
                 if (subscriptionGroupConfig == null) {

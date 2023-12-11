@@ -38,6 +38,8 @@ public class ClusterTopicRouteService extends TopicRouteService {
     @Override
     public ProxyTopicRouteData getTopicRouteForProxy(List<Address> requestHostAndPortList,
         String topicName) throws Exception {
+
+        // 1. 本地缓存 -> nameserver
         TopicRouteData topicRouteData = getAllMessageQueueView(topicName).getTopicRouteData();
 
         ProxyTopicRouteData proxyTopicRouteData = new ProxyTopicRouteData();
@@ -48,6 +50,7 @@ public class ClusterTopicRouteService extends TopicRouteService {
             proxyBrokerData.setCluster(brokerData.getCluster());
             proxyBrokerData.setBrokerName(brokerData.getBrokerName());
             for (Long brokerId : brokerData.getBrokerAddrs().keySet()) {
+                // 2. 注意所有brokerId对应的地址，和客户端传入的endpoint相关，即rmq-proxy地址
                 proxyBrokerData.getBrokerAddrs().put(brokerId, requestHostAndPortList);
             }
             proxyTopicRouteData.getBrokerDatas().add(proxyBrokerData);

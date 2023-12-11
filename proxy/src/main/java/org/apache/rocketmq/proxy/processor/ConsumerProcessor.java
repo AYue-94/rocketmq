@@ -87,10 +87,12 @@ public class ConsumerProcessor extends AbstractProcessor {
     ) {
         CompletableFuture<PopResult> future = new CompletableFuture<>();
         try {
+            // 1. 选队列
             AddressableMessageQueue messageQueue = queueSelector.select(ctx, this.serviceManager.getTopicRouteService().getCurrentMessageQueueView(topic));
             if (messageQueue == null) {
                 throw new ProxyException(ProxyExceptionCode.FORBIDDEN, "no readable queue");
             }
+            // 2. 向broker发起长轮询
             return popMessage(ctx, messageQueue, consumerGroup, topic, maxMsgNums, invisibleTime, pollTime, initMode, subscriptionData, fifo, popMessageResultFilter, timeoutMillis);
         }  catch (Throwable t) {
             future.completeExceptionally(t);
@@ -120,6 +122,7 @@ public class ConsumerProcessor extends AbstractProcessor {
                 maxMsgNums = ProxyUtils.MAX_MSG_NUMS_FOR_POP_REQUEST;
             }
 
+            // remoting协议
             PopMessageRequestHeader requestHeader = new PopMessageRequestHeader();
             requestHeader.setConsumerGroup(consumerGroup);
             requestHeader.setTopic(topic);
@@ -132,11 +135,13 @@ public class ConsumerProcessor extends AbstractProcessor {
             requestHeader.setExp(subscriptionData.getSubString());
             requestHeader.setOrder(fifo);
 
+            // 向broker发起长轮询
             future = this.serviceManager.getMessageService().popMessage(
                     ctx,
                     messageQueue,
                     requestHeader,
                     timeoutMillis)
+                // 消息过滤
                 .thenApplyAsync(popResult -> {
                     if (PopStatus.FOUND.equals(popResult.getPopStatus()) &&
                         popResult.getMsgFoundList() != null &&
@@ -158,7 +163,7 @@ public class ConsumerProcessor extends AbstractProcessor {
                                 PopMessageResultFilter.FilterResult filterResult =
                                     popMessageResultFilter.filterMessage(ctx, consumerGroup, subscriptionData, messageExt);
                                 switch (filterResult) {
-                                    case NO_MATCH:
+                                    case NO_MATCH: // tag不匹配
                                         this.messagingProcessor.ackMessage(
                                             ctx,
                                             ReceiptHandle.decode(handleString),
@@ -167,7 +172,7 @@ public class ConsumerProcessor extends AbstractProcessor {
                                             topic,
                                             MessagingProcessor.DEFAULT_TIMEOUT_MILLS);
                                         break;
-                                    case TO_DLQ:
+                                    case TO_DLQ: // 超出重试次数
                                         this.messagingProcessor.forwardMessageToDeadLetterQueue(
                                             ctx,
                                             ReceiptHandle.decode(handleString),
@@ -215,8 +220,9 @@ public class ConsumerProcessor extends AbstractProcessor {
     ) {
         CompletableFuture<AckResult> future = new CompletableFuture<>();
         try {
-            this.validateReceiptHandle(handle);
+            this.validateReceiptHandle(handle); // 句柄过期（invisibleTime=60s）INVALID_RECEIPT_HANDLE
 
+            // remoting协议
             AckMessageRequestHeader ackMessageRequestHeader = new AckMessageRequestHeader();
             ackMessageRequestHeader.setConsumerGroup(consumerGroup);
             ackMessageRequestHeader.setTopic(handle.getRealTopic(topic, consumerGroup));

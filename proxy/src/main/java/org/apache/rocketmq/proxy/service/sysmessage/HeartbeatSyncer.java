@@ -100,16 +100,19 @@ public class HeartbeatSyncer extends AbstractSystemMessageSyncer {
     public void onConsumerRegister(String consumerGroup, ClientChannelInfo clientChannelInfo,
         ConsumeType consumeType, MessageModel messageModel, ConsumeFromWhere consumeFromWhere,
         Set<SubscriptionData> subList) {
+        // isRemote => 其他proxy同步过来的RemoteChannel，不再发消息
         if (clientChannelInfo == null || ChannelHelper.isRemote(clientChannelInfo.getChannel())) {
             return;
         }
         try {
             this.threadPoolExecutor.submit(() -> {
                 try {
+                    // proxy GrpcClientChannel -> proxy RemoteChannel
                     RemoteChannel remoteChannel = RemoteChannel.create(clientChannelInfo.getChannel());
                     if (remoteChannel == null) {
                         return;
                     }
+                    // 封装HeartbeatSyncerData
                     HeartbeatSyncerData data = new HeartbeatSyncerData(
                         HeartbeatType.REGISTER,
                         clientChannelInfo.getClientId(),
@@ -119,12 +122,14 @@ public class HeartbeatSyncer extends AbstractSystemMessageSyncer {
                         consumeType,
                         messageModel,
                         consumeFromWhere,
-                        localProxyId,
+                        localProxyId, // 本机ip+remoting端口+grpc端口
                         remoteChannel.encode()
                     );
                     data.setSubscriptionDataSet(subList);
 
                     log.debug("sync register heart beat. topic:{}, data:{}", this.getBroadcastTopicName(), data);
+
+                    // 向系统topic=DefaultHeartBeatSyncerTopic发送一条消息
                     this.sendSystemMessage(data);
                 } catch (Throwable t) {
                     log.error("heartbeat register broadcast failed. group:{}, clientChannelInfo:{}, consumeType:{}, messageModel:{}, consumeFromWhere:{}, subList:{}",
@@ -184,6 +189,7 @@ public class HeartbeatSyncer extends AbstractSystemMessageSyncer {
             try {
                 HeartbeatSyncerData data = JSON.parseObject(new String(msg.getBody(), StandardCharsets.UTF_8), HeartbeatSyncerData.class);
                 if (data.getLocalProxyId().equals(localProxyId)) {
+                    // 如果是自己发送的消息，忽略
                     continue;
                 }
 

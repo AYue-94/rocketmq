@@ -276,7 +276,7 @@ public abstract class RebalanceImpl {
             try {
                 Set<MessageQueueAssignment> resultSet = mQClientFactory.queryAssignment(topic, consumerGroup,
                     strategyName, messageModel, QUERY_ASSIGNMENT_TIMEOUT / TIMEOUT_CHECK_TIMES * retryTimes);
-                topicBrokerRebalance.put(topic, topic); // 执行queryAssignment成功，开启client rebalance
+                topicBrokerRebalance.put(topic, topic); // 执行queryAssignment成功，开启broker rebalance
                 return true;
             } catch (Throwable t) {
                 if (!(t instanceof RemotingTimeoutException)) { // 非timeout直接返回false

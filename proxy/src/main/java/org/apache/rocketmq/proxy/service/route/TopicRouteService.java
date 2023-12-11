@@ -70,19 +70,22 @@ public abstract class TopicRouteService extends AbstractStartAndShutdown {
         );
         this.mqClientAPIFactory = mqClientAPIFactory;
 
-        this.topicCache = Caffeine.newBuilder().maximumSize(config.getTopicRouteServiceCacheMaxNum()).
-            refreshAfterWrite(config.getTopicRouteServiceCacheExpiredInSeconds(), TimeUnit.SECONDS).
-            executor(cacheRefreshExecutor).build(new CacheLoader<String, MessageQueueView>() {
+        this.topicCache = Caffeine.newBuilder().maximumSize(config.getTopicRouteServiceCacheMaxNum()). // 20w
+            refreshAfterWrite(config.getTopicRouteServiceCacheExpiredInSeconds(), TimeUnit.SECONDS). // 20s
+            executor(cacheRefreshExecutor/*核数 + 5k队列 + DiscardOldest*/).build(new CacheLoader<String, MessageQueueView>() {
                 @Override public @Nullable MessageQueueView load(String topic) throws Exception {
                     try {
+                        // 从nameserver加载路由
                         TopicRouteData topicRouteData = topicRouteCacheLoader.loadTopicRouteData(topic);
                         if (isTopicRouteValid(topicRouteData)) {
                             MessageQueueView tmp = new MessageQueueView(topic, topicRouteData);
                             log.info("load topic route from namesrv. topic: {}, queue: {}", topic, tmp);
                             return tmp;
                         }
+                        // 如果路由非法（比如为空），缓存WRAPPED_EMPTY_QUEUE对象
                         return MessageQueueView.WRAPPED_EMPTY_QUEUE;
                     } catch (Exception e) {
+                        // topic不存在，缓存WRAPPED_EMPTY_QUEUE对象
                         if (TopicRouteHelper.isTopicNotExistError(e)) {
                             return MessageQueueView.WRAPPED_EMPTY_QUEUE;
                         }
@@ -174,7 +177,8 @@ public abstract class TopicRouteService extends AbstractStartAndShutdown {
 
         @Override
         protected TopicRouteData loadTopicRouteData(String topic) throws Exception {
-            return mqClientAPIFactory.getClient().getTopicRouteInfoFromNameServer(topic, Duration.ofSeconds(3).toMillis());
+            return mqClientAPIFactory.getClient()
+                .getTopicRouteInfoFromNameServer(topic, Duration.ofSeconds(3).toMillis());
         }
     }
 }

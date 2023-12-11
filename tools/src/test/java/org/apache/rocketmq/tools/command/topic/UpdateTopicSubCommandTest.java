@@ -50,4 +50,16 @@ public class UpdateTopicSubCommandTest {
         assertThat(commandLine.getOptionValue('u').trim()).isEqualTo("false");
         assertThat(commandLine.getOptionValue('s').trim()).isEqualTo("false");
     }
+
+//    @Test
+//    public void createTopic() throws MQClientException {
+//        DefaultMQAdminExt mqAdminExt = new DefaultMQAdminExt();
+//        mqAdminExt.setInstanceName(UUID.randomUUID().toString());
+//        mqAdminExt.setNamesrvAddr("127.0.0.1:9876");
+//        mqAdminExt.start();
+//        Map<String, String> attributes = new HashMap<>();
+//        attributes.put("+" + TopicAttributes.TOPIC_MESSAGE_TYPE_ATTRIBUTE.getName(), TopicMessageType.NORMAL.getValue());
+//        mqAdminExt.createTopic("DefaultCluster", "MyTopic", 4, attributes);
+//        mqAdminExt.shutdown();
+//    }
 }

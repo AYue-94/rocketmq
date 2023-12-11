@@ -60,13 +60,17 @@ public class RouteActivity extends AbstractMessingActivity {
     public CompletableFuture<QueryRouteResponse> queryRoute(ProxyContext ctx, QueryRouteRequest request) {
         CompletableFuture<QueryRouteResponse> future = new CompletableFuture<>();
         try {
+
+            // 1. 模型转换，校验
             validateTopic(request.getTopic());
             List<org.apache.rocketmq.proxy.common.Address> addressList = this.convertToAddressList(request.getEndpoints());
-
             String topicName = GrpcConverter.getInstance().wrapResourceWithNamespace(request.getTopic());
+
+            // 2. 查询路由
             ProxyTopicRouteData proxyTopicRouteData = this.messagingProcessor.getTopicRouteDataForProxy(
                 ctx, addressList, topicName);
 
+            // 3. 模型转换
             List<MessageQueue> messageQueueList = new ArrayList<>();
             Map<String, Map<Long, Broker>> brokerMap = buildBrokerMap(proxyTopicRouteData.getBrokerDatas());
 
@@ -99,25 +103,30 @@ public class RouteActivity extends AbstractMessingActivity {
 
         try {
             validateTopicAndConsumerGroup(request.getTopic(), request.getGroup());
+
+            // S1，和路由一样，将入参Endpoints转换为Address列表
             List<org.apache.rocketmq.proxy.common.Address> addressList = this.convertToAddressList(request.getEndpoints());
 
+            // S2，和路由一样（本地缓存->nameserver）
             ProxyTopicRouteData proxyTopicRouteData = this.messagingProcessor.getTopicRouteDataForProxy(
                 ctx,
                 addressList,
                 GrpcConverter.getInstance().wrapResourceWithNamespace(request.getTopic()));
 
+            // S3，出参转换
             List<Assignment> assignments = new ArrayList<>();
-            Map<String, Map<Long, Broker>> brokerMap = buildBrokerMap(proxyTopicRouteData.getBrokerDatas());
-            for (QueueData queueData : proxyTopicRouteData.getQueueDatas()) {
+            Map<String/*brokerName*/, Map<Long/*brokerId*/, Broker>> brokerMap = buildBrokerMap(proxyTopicRouteData.getBrokerDatas());
+            for (QueueData queueData : proxyTopicRouteData.getQueueDatas()) { // 循环topic下所有队列
+                // 可读队列
                 if (PermName.isReadable(queueData.getPerm()) && queueData.getReadQueueNums() > 0) {
                     Map<Long, Broker> brokerIdMap = brokerMap.get(queueData.getBrokerName());
                     if (brokerIdMap != null) {
                         Broker broker = brokerIdMap.get(MixAll.MASTER_ID);
                         MessageQueue defaultMessageQueue = MessageQueue.newBuilder()
-                            .setTopic(request.getTopic())
-                            .setId(-1)
+                            .setTopic(request.getTopic()) // 入参topic
+                            .setId(-1) // 队列id-1
                             .setPermission(this.convertToPermission(queueData.getPerm()))
-                            .setBroker(broker)
+                            .setBroker(broker) // master broker --- address=endpoints
                             .build();
 
                         assignments.add(Assignment.newBuilder()
@@ -168,11 +177,12 @@ public class RouteActivity extends AbstractMessingActivity {
         List<org.apache.rocketmq.proxy.common.Address> addressList = new ArrayList<>();
         for (Address address : endpoints.getAddressesList()) {
             int port = ConfigurationManager.getProxyConfig().getGrpcServerPort();
-            if (useEndpointPort) {
-                port = address.getPort();
+            if (useEndpointPort) { // 默认false，使用配置grpcServerPort
+                port = address.getPort(); // 设置为true，使用客户端传入的port
             }
             addressList.add(new org.apache.rocketmq.proxy.common.Address(
                 org.apache.rocketmq.proxy.common.Address.AddressScheme.valueOf(endpoints.getScheme().name()),
+                // host取客户端传入的，port默认取配置grpcServerPort
                 HostAndPort.fromParts(address.getHost(), port)));
         }
 

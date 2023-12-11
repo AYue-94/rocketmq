@@ -79,11 +79,11 @@ public class SendMessageActivity extends AbstractMessingActivity {
 
             future = this.messagingProcessor.sendMessage(
                 ctx,
-                new SendMessageQueueSelector(request),
+                new SendMessageQueueSelector(request), // 队列负载均衡选择器
                 GrpcConverter.getInstance().wrapResourceWithNamespace(topic),
                 buildSysFlag(message),
-                buildMessage(ctx, request.getMessagesList(), topic)
-            ).thenApply(result -> convertToSendMessageResponse(ctx, request, result));
+                buildMessage(ctx, request.getMessagesList(), topic) // message模型转换
+            ).thenApply(result -> convertToSendMessageResponse(ctx, request, result)); // 出参模型转换
         } catch (Throwable t) {
             future.completeExceptionally(t);
         }
@@ -107,10 +107,11 @@ public class SendMessageActivity extends AbstractMessingActivity {
     protected Message buildMessage(ProxyContext context, apache.rocketmq.v2.Message protoMessage, String producerGroup) {
         String topicName = GrpcConverter.getInstance().wrapResourceWithNamespace(protoMessage.getTopic());
 
-        validateMessageBodySize(protoMessage.getBody());
+        validateMessageBodySize(protoMessage.getBody()); // 4mb
         Message messageExt = new Message();
         messageExt.setTopic(topicName);
         messageExt.setBody(protoMessage.getBody().toByteArray());
+        // properties转换 校验
         Map<String, String> messageProperty = this.buildMessageProperty(context, protoMessage, producerGroup);
 
         MessageAccessor.setProperties(messageExt, messageProperty);
@@ -376,12 +377,12 @@ public class SendMessageActivity extends AbstractMessingActivity {
                     shardingKey = message.getSystemProperties().getMessageGroup();
                 }
                 AddressableMessageQueue targetMessageQueue;
-                if (StringUtils.isNotEmpty(shardingKey)) {
+                if (StringUtils.isNotEmpty(shardingKey)) { // fifo 顺序消息
                     // With shardingKey
                     List<AddressableMessageQueue> writeQueues = messageQueueView.getWriteSelector().getQueues();
                     int bucket = Hashing.consistentHash(shardingKey.hashCode(), writeQueues.size());
                     targetMessageQueue = writeQueues.get(bucket);
-                } else {
+                } else { // 普通消息
                     targetMessageQueue = messageQueueView.getWriteSelector().selectOne(false);
                 }
                 return targetMessageQueue;

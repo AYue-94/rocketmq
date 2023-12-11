@@ -103,8 +103,10 @@ public class ReceiveMessageActivity extends AbstractMessingActivity {
             long actualInvisibleTime = Durations.toMillis(request.getInvisibleDuration());
             ProxyConfig proxyConfig = ConfigurationManager.getProxyConfig();
             if (proxyConfig.isEnableProxyAutoRenew() && request.getAutoRenew()) {
+                // push consumer 60s
                 actualInvisibleTime = proxyConfig.getDefaultInvisibleTimeMills();
             } else {
+                // pull(simple) consumer
                 validateInvisibleTime(actualInvisibleTime,
                     ConfigurationManager.getProxyConfig().getMinInvisibleTimeMillsForRecv());
             }
@@ -119,23 +121,26 @@ public class ReceiveMessageActivity extends AbstractMessingActivity {
                 return;
             }
 
+            // S1 proxy处理receive请求
             this.messagingProcessor.popMessage(
                     ctx,
-                    new ReceiveMessageQueueSelector(
+                    new ReceiveMessageQueueSelector( // 队列选择器
                         request.getMessageQueue().getBroker().getName()
                     ),
                     group,
                     topic,
-                    request.getBatchSize(),
-                    actualInvisibleTime,
-                    pollingTime,
+                    request.getBatchSize(), // 最大32
+                    actualInvisibleTime, // 60s --- push消费 proxy配置决定
+                    pollingTime, // 20s --- Settings同步 proxy配置决定
                     ConsumeInitMode.MAX,
-                    subscriptionData,
-                    fifo,
-                    new PopMessageResultFilterImpl(maxAttempts),
-                    timeRemaining
+                    subscriptionData, // topic - tag
+                    fifo, // 是否顺序
+                    new PopMessageResultFilterImpl(maxAttempts), // 过滤器 重试次数
+                    timeRemaining // 剩余请求超时时间
                 ).thenAccept(popResult -> {
+                    // S2 broker返回消息
                     if (proxyConfig.isEnableProxyAutoRenew() && request.getAutoRenew()) {
+                        // push_consumer renew
                         if (PopStatus.FOUND.equals(popResult.getPopStatus())) {
                             List<MessageExt> messageExtList = popResult.getMsgFoundList();
                             for (MessageExt messageExt : messageExtList) {
@@ -149,6 +154,7 @@ public class ReceiveMessageActivity extends AbstractMessingActivity {
                             }
                         }
                     }
+                    // 响应客户端
                     writer.writeAndComplete(ctx, request, popResult);
                 })
                 .exceptionally(t -> {
@@ -183,6 +189,7 @@ public class ReceiveMessageActivity extends AbstractMessingActivity {
                 MessageQueueSelector messageQueueSelector = messageQueueView.getReadSelector();
 
                 if (StringUtils.isNotBlank(brokerName)) {
+                    // 选择客户端指定broker的queue，queueId=-1
                     addressableMessageQueue = messageQueueSelector.getQueueByBrokerName(brokerName);
                 }
 

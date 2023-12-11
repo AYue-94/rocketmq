@@ -49,21 +49,21 @@ public class ReceiptHandle {
     }
 
     public static ReceiptHandle decode(String receiptHandle) {
-        List<String> dataList = Arrays.asList(receiptHandle.split(SEPARATOR));
+        List<String> dataList = Arrays.asList(receiptHandle.split(SEPARATOR)); // 空格分割
         if (dataList.size() < 8) {
             throw new IllegalArgumentException("Parse failed, dataList size " + dataList.size());
         }
         long startOffset = Long.parseLong(dataList.get(0));
-        long retrieveTime = Long.parseLong(dataList.get(1));
-        long invisibleTime = Long.parseLong(dataList.get(2));
-        int reviveQueueId = Integer.parseInt(dataList.get(3));
+        long retrieveTime = Long.parseLong(dataList.get(1)); // popTime 拉消息时间
+        long invisibleTime = Long.parseLong(dataList.get(2));// invisibleTime 60s
+        int reviveQueueId = Integer.parseInt(dataList.get(3)); // revive topic 的 queueId
         String topicType = dataList.get(4);
         String brokerName = dataList.get(5);
-        int queueId = Integer.parseInt(dataList.get(6));
-        long offset = Long.parseLong(dataList.get(7));
+        int queueId = Integer.parseInt(dataList.get(6)); // 用户topic的queueId
+        long offset = Long.parseLong(dataList.get(7)); // 用户topic的queue的逻辑offset
         long commitLogOffset = -1L;
         if (dataList.size() >= 9) {
-            commitLogOffset = Long.parseLong(dataList.get(8));
+            commitLogOffset = Long.parseLong(dataList.get(8)); // 物理offset
         }
 
         return new ReceiptHandleBuilder()

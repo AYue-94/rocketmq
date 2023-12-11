@@ -88,6 +88,7 @@ public abstract class AbstractSystemMessageSyncer implements StartAndShutdown, M
     }
 
     protected void sendSystemMessage(Object data) {
+        // config heartbeatSyncerTopicName = DefaultHeartBeatSyncerTopic
         String targetTopic = this.getBroadcastTopicName();
         try {
             Message message = new Message(
@@ -95,6 +96,8 @@ public abstract class AbstractSystemMessageSyncer implements StartAndShutdown, M
                 JSON.toJSONString(data).getBytes(StandardCharsets.UTF_8)
             );
 
+            // proxy侧，broker纬度负载均衡，查询topic下queue，只按照broker纬度做负载均衡，queueId都是-1
+            // broker侧，queue纬度负载均衡，queueId < 0，按照可写队列数量随机选择
             AddressableMessageQueue messageQueue = this.topicRouteService.getAllMessageQueueView(targetTopic)
                 .getWriteSelector().selectOne(true);
             this.mqClientAPIFactory.getClient().sendMessageAsync(
@@ -137,8 +140,10 @@ public abstract class AbstractSystemMessageSyncer implements StartAndShutdown, M
 
     @Override
     public void start() throws Exception {
+        // 创建心跳同步topic=DefaultHeartBeatSyncerTopic
         this.createSysTopic();
         RPCHook rpcHook = this.getRpcHook();
+        // 创建【广播】消费者，消费DefaultHeartBeatSyncerTopic
         this.defaultMQPushConsumer = new DefaultMQPushConsumer(null, this.getSystemMessageConsumerId(), rpcHook);
 
         this.defaultMQPushConsumer.setConsumeFromWhere(ConsumeFromWhere.CONSUME_FROM_LAST_OFFSET);
@@ -157,16 +162,18 @@ public abstract class AbstractSystemMessageSyncer implements StartAndShutdown, M
             return;
         }
 
+        // 默认=配置项rocketMQClusterName
+        // 可选=配置项heartbeatSyncerTopicClusterName
         String clusterName = this.getBroadcastTopicClusterName();
         if (StringUtils.isEmpty(clusterName)) {
             throw new ProxyException(ProxyExceptionCode.INTERNAL_SERVER_ERROR, "system topic cluster cannot be empty");
         }
 
         boolean createSuccess = this.adminService.createTopicOnTopicBrokerIfNotExist(
-            this.getBroadcastTopicName(),
-            clusterName,
-            this.getBroadcastTopicQueueNum(),
-            this.getBroadcastTopicQueueNum(),
+            this.getBroadcastTopicName(), // DefaultHeartBeatSyncerTopic
+            clusterName, // DefaultCluster
+            this.getBroadcastTopicQueueNum(), // 1
+            this.getBroadcastTopicQueueNum(), // 1
             true,
             3
         );

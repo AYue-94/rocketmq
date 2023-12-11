@@ -98,10 +98,12 @@ public class AckMessageActivity extends AbstractMessingActivity {
             String handleString = ackMessageEntry.getReceiptHandle();
 
             String group = GrpcConverter.getInstance().wrapResourceWithNamespace(request.getGroup());
+            // 1. 移除renew逻辑缓存的receiptHandle
             MessageReceiptHandle messageReceiptHandle = receiptHandleProcessor.removeReceiptHandle(grpcChannelManager.getChannel(ctx.getClientID()), group, ackMessageEntry.getMessageId(), ackMessageEntry.getReceiptHandle());
-            if (messageReceiptHandle != null) {
+            if (messageReceiptHandle != null) { // 取renew逻辑的receiptHandle
                 handleString = messageReceiptHandle.getReceiptHandleStr();
             }
+            // 2. ack
             CompletableFuture<AckResult> ackResultFuture = this.messagingProcessor.ackMessage(
                 ctx,
                 ReceiptHandle.decode(handleString),

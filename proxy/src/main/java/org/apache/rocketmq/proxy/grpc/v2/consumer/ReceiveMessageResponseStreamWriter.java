@@ -64,9 +64,11 @@ public class ReceiveMessageResponseStreamWriter {
                             .setStatus(ResponseBuilder.getInstance().buildStatus(Code.MESSAGE_NOT_FOUND, "no match message"))
                             .build());
                     } else {
+                        // 1个Status包
                         streamObserver.onNext(ReceiveMessageResponse.newBuilder()
                             .setStatus(ResponseBuilder.getInstance().buildStatus(Code.OK, Code.OK.name()))
                             .build());
+                        // n个Message包
                         Iterator<MessageExt> messageIterator = messageFoundList.iterator();
                         while (messageIterator.hasNext()) {
                             MessageExt curMessageExt = messageIterator.next();
@@ -101,6 +103,7 @@ public class ReceiveMessageResponseStreamWriter {
             writeResponseWithErrorIgnore(
                 ReceiveMessageResponse.newBuilder().setStatus(ResponseBuilder.getInstance().buildStatus(t)).build());
         } finally {
+            // DELIVERY_TIMESTAMP包
             onComplete();
         }
     }
@@ -148,10 +151,12 @@ public class ReceiveMessageResponseStreamWriter {
     }
 
     protected void onComplete() {
+        // 1个DELIVERY_TIMESTAMP包
         writeResponseWithErrorIgnore(ReceiveMessageResponse.newBuilder()
             .setDeliveryTimestamp(Timestamps.fromMillis(System.currentTimeMillis()))
             .build());
         try {
+            // END_STREAM
             streamObserver.onCompleted();
         } catch (Exception e) {
             log.error("err when complete receive message response", e);

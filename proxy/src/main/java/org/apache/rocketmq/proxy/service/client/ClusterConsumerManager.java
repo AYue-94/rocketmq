@@ -31,7 +31,7 @@ import org.apache.rocketmq.remoting.protocol.heartbeat.ConsumeType;
 import org.apache.rocketmq.remoting.protocol.heartbeat.MessageModel;
 import org.apache.rocketmq.remoting.protocol.heartbeat.SubscriptionData;
 
-public class ClusterConsumerManager extends ConsumerManager implements StartAndShutdown {
+public class ClusterConsumerManager/*proxy*/ extends ConsumerManager/*broker*/ implements StartAndShutdown {
 
     protected HeartbeatSyncer heartbeatSyncer;
 

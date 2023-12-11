@@ -21,7 +21,7 @@ accounts:
   - accessKey: RocketMQ
     secretKey: 12345678
     whiteRemoteAddress:
-    admin: false
+    admin: true
     defaultTopicPerm: DENY
     defaultGroupPerm: SUB
     topicPerms:
