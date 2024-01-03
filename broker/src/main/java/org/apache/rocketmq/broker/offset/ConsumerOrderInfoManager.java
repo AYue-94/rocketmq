@@ -43,6 +43,7 @@ public class ConsumerOrderInfoManager extends ConfigManager {
     private static final String TOPIC_GROUP_SEPARATOR = "@";
     private static final long CLEAN_SPAN_FROM_LAST = 24 * 3600 * 1000;
 
+    // topic+group+queueId -> OrderInfo
     private ConcurrentHashMap<String/* topic@group*/, ConcurrentHashMap<Integer/*queueId*/, OrderInfo>> table =
         new ConcurrentHashMap<>(128);
 
@@ -102,15 +103,18 @@ public class ConsumerOrderInfoManager extends ConfigManager {
                 qs = old;
             }
         }
-
+        // 每次pop请求，生成一个新的OrderInfo，代表目前这个队列的顺序消费情况
         OrderInfo orderInfo = qs.get(queueId);
 
         if (orderInfo != null) {
+            // case1 合并前一个OrderInfo
             OrderInfo newOrderInfo = new OrderInfo(attemptId, popTime, invisibleTime, msgQueueOffsetList, System.currentTimeMillis(), 0);
+            // 合并消费次数
             newOrderInfo.mergeOffsetConsumedCount(orderInfo.attemptId, orderInfo.offsetList, orderInfo.offsetConsumedCount);
 
             orderInfo = newOrderInfo;
         } else {
+            // case2 这个队列还未被消费过，第一个OrderInfo快照
             orderInfo = new OrderInfo(attemptId, popTime, invisibleTime, msgQueueOffsetList, System.currentTimeMillis(), 0);
         }
         qs.put(queueId, orderInfo);
@@ -154,8 +158,9 @@ public class ConsumerOrderInfoManager extends ConfigManager {
         OrderInfo orderInfo = qs.get(queueId);
 
         if (orderInfo == null) {
-            return false;
+            return false; // 这个queue还未收到过pop请求，放行
         }
+        // 阻塞条件？
         return orderInfo.needBlock(attemptId, invisibleTime);
     }
 
@@ -178,7 +183,6 @@ public class ConsumerOrderInfoManager extends ConfigManager {
     public long commitAndNext(String topic, String group, int queueId, long queueOffset, long popTime) {
         String key = buildKey(topic, group);
         ConcurrentHashMap<Integer/*queueId*/, OrderInfo> qs = table.get(key);
-
         if (qs == null) {
             return queueOffset + 1;
         }
@@ -187,20 +191,19 @@ public class ConsumerOrderInfoManager extends ConfigManager {
             log.warn("OrderInfo is null, {}, {}, {}", key, queueOffset, orderInfo);
             return queueOffset + 1;
         }
-
         List<Long> o = orderInfo.offsetList;
         if (o == null || o.isEmpty()) {
             log.warn("OrderInfo is empty, {}, {}, {}", key, queueOffset, orderInfo);
             return -1;
         }
-
+        // STEP1 非本次pop对应的ack，忽略 --- 超出不可见时间，已经生成新的OrderInfo，所以pop时间不相等
         if (popTime != orderInfo.popTime) {
             log.warn("popTime is not equal to orderInfo saved. key: {}, offset: {}, orderInfo: {}, popTime: {}", key, queueOffset, orderInfo, popTime);
             return -2;
         }
-
         Long first = o.get(0);
         int i = 0, size = o.size();
+        // STEP2 定位offset在offsetList的下标i
         for (; i < size; i++) {
             long temp;
             if (i == 0) {
@@ -217,10 +220,10 @@ public class ConsumerOrderInfoManager extends ConfigManager {
             log.warn("OrderInfo not found commit offset, {}, {}, {}", key, queueOffset, orderInfo);
             return -1;
         }
-        //set bit
+        // STEP3 记录offset被提交
         orderInfo.setCommitOffsetBit(orderInfo.commitOffsetBit | (1L << i));
         long nextOffset = orderInfo.getNextOffset();
-
+        // STEP4 更新锁超时任务
         updateLockFreeTimestamp(topic, group, queueId, orderInfo);
         return nextOffset;
     }
@@ -251,8 +254,9 @@ public class ConsumerOrderInfoManager extends ConfigManager {
             log.warn("popTime is not equal to orderInfo saved. key: {}, queueOffset: {}, orderInfo: {}, popTime: {}", key, queueOffset, orderInfo, popTime);
             return;
         }
-
+        // 更新offset对应可见时间戳
         orderInfo.updateOffsetNextVisibleTime(queueOffset, nextVisibleTime);
+        // 重新调度锁超时任务
         updateLockFreeTimestamp(topic, group, queueId, orderInfo);
     }
 
@@ -485,6 +489,10 @@ public class ConsumerOrderInfoManager extends ConfigManager {
             return simple;
         }
 
+        /**
+         * 是否阻塞本次操作
+         * @return true-存在未ack的消息且还不可见，被阻塞
+         */
         @JSONField(serialize = false, deserialize = false)
         public boolean needBlock(String attemptId, long currentInvisibleTime) {
             if (offsetList == null || offsetList.isEmpty()) {
@@ -500,14 +508,15 @@ public class ConsumerOrderInfoManager extends ConfigManager {
             }
             long currentTime = System.currentTimeMillis();
             for (; i < num; i++) {
-                if (isNotAck(i)) {
+                if (isNotAck(i)) { // 未收到ack
                     long nextVisibleTime = popTime + invisibleTime;
-                    if (offsetNextVisibleTime != null) {
+                    if (offsetNextVisibleTime != null) { // 发生过changeInvisibleTime
                         Long time = offsetNextVisibleTime.get(this.getQueueOffset(i));
                         if (time != null) {
                             nextVisibleTime = time;
                         }
                     }
+                    // 还处于不可见时间内
                     if (currentTime < nextVisibleTime) {
                         return true;
                     }

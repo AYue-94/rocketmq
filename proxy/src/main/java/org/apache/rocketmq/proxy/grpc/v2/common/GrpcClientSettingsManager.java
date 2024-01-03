@@ -158,7 +158,7 @@ public class GrpcClientSettingsManager extends ServiceThread implements StartAnd
         resultSettingsBuilder.getSubscriptionBuilder()
             .setReceiveBatchSize(config.getGrpcClientConsumerLongPollingBatchSize())
             .setLongPollingTimeout(Durations.fromMillis(config.getGrpcClientConsumerMaxLongPollingTimeoutMillis()))
-            .setFifo(groupConfig.isConsumeMessageOrderly());
+            .setFifo(groupConfig.isConsumeMessageOrderly()); // 设置消费者是否fifo
 
         resultSettingsBuilder.getBackoffPolicyBuilder().setMaxAttempts(groupConfig.getRetryMaxTimes() + 1);
 

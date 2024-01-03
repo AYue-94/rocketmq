@@ -35,7 +35,9 @@ import org.apache.rocketmq.logging.org.slf4j.LoggerFactory;
 public class ConsumerOrderInfoLockManager {
     private static final Logger POP_LOGGER = LoggerFactory.getLogger(LoggerName.ROCKETMQ_POP_LOGGER_NAME);
     private final BrokerController brokerController;
-    private final Map<Key, Timeout> timeoutMap = new ConcurrentHashMap<>();
+    // queue - 超时任务
+    private final Map<Key/*topic+group+queue*/, Timeout> timeoutMap = new ConcurrentHashMap<>();
+    // netty 时间轮
     private final Timer timer;
     private static final int TIMER_TICK_MS = 100;
 
@@ -73,10 +75,10 @@ public class ConsumerOrderInfoLockManager {
     }
 
     public void updateLockFreeTimestamp(String topic, String group, int queueId, ConsumerOrderInfoManager.OrderInfo orderInfo) {
-        this.updateLockFreeTimestamp(topic, group, queueId, orderInfo.getLockFreeTimestamp());
+        this.updateLockFreeTimestamp(topic, group, queueId, orderInfo.getLockFreeTimestamp()/*popTime+invisibleTime*/);
     }
 
-    public void updateLockFreeTimestamp(String topic, String group, int queueId, Long lockFreeTimestamp) {
+    public void updateLockFreeTimestamp(String topic, String group, int queueId, Long lockFreeTimestamp/*可见时间戳*/) {
         if (!this.brokerController.getBrokerConfig().isEnableNotifyAfterPopOrderLockRelease()) {
             return;
         }
@@ -122,7 +124,7 @@ public class ConsumerOrderInfoLockManager {
     }
 
     private class NotifyLockFreeTimerTask implements TimerTask {
-
+        // topic-group-queue
         private final Key key;
 
         private NotifyLockFreeTimerTask(Key key) {
@@ -134,6 +136,7 @@ public class ConsumerOrderInfoLockManager {
             if (timeout.isCancelled() || !brokerController.getBrokerConfig().isEnableNotifyAfterPopOrderLockRelease()) {
                 return;
             }
+            // 唤醒长轮询客户端
             notifyLockIsFree(key);
             timeoutMap.computeIfPresent(key, (key1, curTimeout) -> {
                 if (curTimeout == timeout) {

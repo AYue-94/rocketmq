@@ -138,7 +138,7 @@ public class ReceiveMessageActivity extends AbstractMessingActivity {
                     new PopMessageResultFilterImpl(maxAttempts), // 过滤器 重试次数
                     timeRemaining // 剩余请求超时时间
                 ).thenAccept(popResult -> {
-                    // S2 broker返回消息
+                    // S2 broker返回消息 push消费renew
                     if (proxyConfig.isEnableProxyAutoRenew() && request.getAutoRenew()) {
                         // push_consumer renew
                         if (PopStatus.FOUND.equals(popResult.getPopStatus())) {

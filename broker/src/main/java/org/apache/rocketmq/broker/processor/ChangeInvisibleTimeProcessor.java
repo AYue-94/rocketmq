@@ -96,7 +96,7 @@ public class ChangeInvisibleTimeProcessor implements NettyRequestProcessor {
         }
 
         String[] extraInfo = ExtraInfoUtil.split(requestHeader.getExtraInfo());
-
+        //【feat:顺序消费】
         if (ExtraInfoUtil.isOrder(extraInfo)) {
             return processChangeInvisibleTimeForOrder(requestHeader, extraInfo, response, responseHeader);
         }
@@ -136,16 +136,19 @@ public class ChangeInvisibleTimeProcessor implements NettyRequestProcessor {
         if (requestHeader.getOffset() < oldOffset) {
             return response;
         }
+        // 1. 队列级别锁
         while (!this.brokerController.getPopMessageProcessor().getQueueLockManager().tryLock(requestHeader.getTopic(), requestHeader.getConsumerGroup(), requestHeader.getQueueId())) {
         }
         try {
+            // 2. offset校验
             oldOffset = this.brokerController.getConsumerOffsetManager().queryOffset(requestHeader.getConsumerGroup(),
                 requestHeader.getTopic(), requestHeader.getQueueId());
             if (requestHeader.getOffset() < oldOffset) {
                 return response;
             }
-
+            // 3. 计算下一次的可见时间
             long nextVisibleTime = System.currentTimeMillis() + requestHeader.getInvisibleTime();
+            // 4. 更新OrderInfo中offset对应可见时间戳 重新调度queue超时任务
             this.brokerController.getConsumerOrderInfoManager().updateNextVisibleTime(
                 requestHeader.getTopic(), requestHeader.getConsumerGroup(), requestHeader.getQueueId(), requestHeader.getOffset(), popTime, nextVisibleTime);
 

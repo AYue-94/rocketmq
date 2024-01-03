@@ -150,36 +150,45 @@ public class AckMessageProcessor implements NettyRequestProcessor {
 
         this.brokerController.getBrokerStatsManager().incBrokerAckNums(1);
         this.brokerController.getBrokerStatsManager().incGroupAckNums(requestHeader.getConsumerGroup(), requestHeader.getTopic(), 1);
-
+        //【feat:顺序消费】revive queueId = 999
         if (rqId == KeyBuilder.POP_ORDER_REVIVE_QUEUE) {
             // order
             String lockKey = requestHeader.getTopic() + PopAckConstants.SPLIT
                 + requestHeader.getConsumerGroup() + PopAckConstants.SPLIT + requestHeader.getQueueId();
+            // fast-path offset校验
             long oldOffset = this.brokerController.getConsumerOffsetManager().queryOffset(requestHeader.getConsumerGroup(),
                 requestHeader.getTopic(), requestHeader.getQueueId());
             if (requestHeader.getOffset() < oldOffset) {
                 return response;
             }
+            // 1. 获取队列独占锁 topic+group+queueId
             while (!this.brokerController.getPopMessageProcessor().getQueueLockManager().tryLock(lockKey)) {
             }
             try {
+                // 2. offset校验
                 oldOffset = this.brokerController.getConsumerOffsetManager().queryOffset(requestHeader.getConsumerGroup(),
                     requestHeader.getTopic(), requestHeader.getQueueId());
                 if (requestHeader.getOffset() < oldOffset) {
                     return response;
                 }
+                // 3. orderInfo提交offset
                 long nextOffset = brokerController.getConsumerOrderInfoManager().commitAndNext(
                     requestHeader.getTopic(), requestHeader.getConsumerGroup(),
                     requestHeader.getQueueId(), requestHeader.getOffset(),
                     ExtraInfoUtil.getPopTime(extraInfo));
+                //  -1 : illegal, -2 : no need commit, >= 0 : commit
                 if (nextOffset > -1) {
+                    // RIP-48 无reset offset 忽略
                     if (!this.brokerController.getConsumerOffsetManager().hasOffsetReset(
                         requestHeader.getTopic(), requestHeader.getConsumerGroup(), requestHeader.getQueueId())) {
+                        // 4. 内存table提交offset
                         this.brokerController.getConsumerOffsetManager().commitOffset(channel.remoteAddress().toString(),
                             requestHeader.getConsumerGroup(), requestHeader.getTopic(), requestHeader.getQueueId(), nextOffset);
                     }
+                    // 5. 判断是否都ack了
                     if (!this.brokerController.getConsumerOrderInfoManager().checkBlock(null, requestHeader.getTopic(),
                         requestHeader.getConsumerGroup(), requestHeader.getQueueId(), invisibleTime)) {
+                        // 6. 唤醒长轮询客户端
                         this.brokerController.getPopMessageProcessor().notifyMessageArriving(
                             requestHeader.getTopic(), requestHeader.getConsumerGroup(), requestHeader.getQueueId());
                     }

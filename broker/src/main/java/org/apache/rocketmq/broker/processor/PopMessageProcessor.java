@@ -330,7 +330,7 @@ public class PopMessageProcessor implements NettyRequestProcessor {
         }
         int reviveQid;
         if (requestHeader.isOrder()) {
-            reviveQid = KeyBuilder.POP_ORDER_REVIVE_QUEUE;
+            reviveQid = KeyBuilder.POP_ORDER_REVIVE_QUEUE; // 999
         } else {
             reviveQid = (int) Math.abs(ckMessageNumber.getAndIncrement() % this.brokerController.getBrokerConfig().getReviveQueueNum());
         }
@@ -498,6 +498,7 @@ public class PopMessageProcessor implements NettyRequestProcessor {
             // 查询pop消费进度
             offset = getPopOffset(topic, requestHeader.getConsumerGroup(), queueId, requestHeader.getInitMode(),
                 true, lockKey, true);
+            // 【feat:顺序消费】队列尚有未ack消息，直接返回
             if (isOrder && brokerController.getConsumerOrderInfoManager().checkBlock(attemptId, topic,
                 requestHeader.getConsumerGroup(), queueId, requestHeader.getInvisibleTime())) {
                 future.complete(this.brokerController.getMessageStore().getMaxOffsetInQueue(topic, queueId) - offset + restNum);
@@ -524,7 +525,7 @@ public class PopMessageProcessor implements NettyRequestProcessor {
             return future;
         }
 
-        AtomicLong atomicRestNum = new AtomicLong(restNum); // 剩余数量
+        AtomicLong atomicRestNum = new AtomicLong(restNum); // 剩余待拉取消息数量
         AtomicLong atomicOffset = new AtomicLong(offset); // pop消费进度
         long finalOffset = offset;
         return this.brokerController.getMessageStore()
@@ -573,11 +574,14 @@ public class PopMessageProcessor implements NettyRequestProcessor {
                     BrokerMetricsManager.messagesOutTotal.add(result.getMessageCount(), attributes);
                     BrokerMetricsManager.throughputOutTotal.add(result.getBufferTotalSize(), attributes);
 
+                    // 【feat:顺序消费】
                     if (isOrder) {
+                        // 1. 更新OrderInfo
                         this.brokerController.getConsumerOrderInfoManager().update(requestHeader.getAttemptId(), isRetry, topic,
                             requestHeader.getConsumerGroup(),
                             queueId, popTime, requestHeader.getInvisibleTime(), result.getMessageQueueOffset(),
                             orderCountInfo);
+                        // 2. 提交offset【没什么用，offset在这里并不会发生变化，不知道这里写来干嘛】
                         this.brokerController.getConsumerOffsetManager().commitOffset(channel.remoteAddress().toString(),
                             requestHeader.getConsumerGroup(), topic, queueId, finalOffset);
                     } else {

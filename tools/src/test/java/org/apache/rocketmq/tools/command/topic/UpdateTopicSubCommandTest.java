@@ -16,10 +16,17 @@
  */
 package org.apache.rocketmq.tools.command.topic;
 
+import java.util.HashMap;
+import java.util.Map;
+import java.util.UUID;
 import org.apache.commons.cli.CommandLine;
 import org.apache.commons.cli.DefaultParser;
 import org.apache.commons.cli.Options;
+import org.apache.rocketmq.client.exception.MQClientException;
+import org.apache.rocketmq.common.TopicAttributes;
+import org.apache.rocketmq.common.attribute.TopicMessageType;
 import org.apache.rocketmq.srvutil.ServerUtil;
+import org.apache.rocketmq.tools.admin.DefaultMQAdminExt;
 import org.junit.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -51,15 +58,29 @@ public class UpdateTopicSubCommandTest {
         assertThat(commandLine.getOptionValue('s').trim()).isEqualTo("false");
     }
 
-//    @Test
-//    public void createTopic() throws MQClientException {
-//        DefaultMQAdminExt mqAdminExt = new DefaultMQAdminExt();
-//        mqAdminExt.setInstanceName(UUID.randomUUID().toString());
-//        mqAdminExt.setNamesrvAddr("127.0.0.1:9876");
-//        mqAdminExt.start();
-//        Map<String, String> attributes = new HashMap<>();
-//        attributes.put("+" + TopicAttributes.TOPIC_MESSAGE_TYPE_ATTRIBUTE.getName(), TopicMessageType.NORMAL.getValue());
-//        mqAdminExt.createTopic("DefaultCluster", "MyTopic", 4, attributes);
-//        mqAdminExt.shutdown();
-//    }
+    @Test
+    public void createTopic() throws MQClientException {
+        DefaultMQAdminExt mqAdminExt = new DefaultMQAdminExt();
+        mqAdminExt.setInstanceName(UUID.randomUUID().toString());
+        mqAdminExt.setNamesrvAddr("127.0.0.1:9876");
+        mqAdminExt.start();
+
+        createTopic(TopicMessageType.NORMAL, mqAdminExt, "MyTopic");
+
+        createTopic(TopicMessageType.FIFO, mqAdminExt, "MyOrderTopic");
+
+        createTopic(TopicMessageType.TRANSACTION, mqAdminExt, "MyTransTopic");
+
+        createTopic(TopicMessageType.DELAY, mqAdminExt, "MyDelayTopic");
+
+        mqAdminExt.shutdown();
+    }
+
+    private static void createTopic(TopicMessageType topicMessageType, DefaultMQAdminExt mqAdminExt, String topic) throws MQClientException {
+        Map<String, String> attributes = new HashMap<>();
+        if (topicMessageType != null) {
+            attributes.put("+" + TopicAttributes.TOPIC_MESSAGE_TYPE_ATTRIBUTE.getName(), topicMessageType.getValue());
+        }
+        mqAdminExt.createTopic("DefaultCluster", topic, 4, attributes);
+    }
 }

@@ -5,5 +5,5 @@
   "remotingListenPort": 8080,
   "grpcServerPort": 8081,
   "useEndpointPortFromRequest": true,
-  "enableACL": true
+  "enableACL": false
 }

@@ -582,7 +582,7 @@ public class BrokerController {
             public void run() {
                 try {
                     BrokerController.this.consumerFilterManager.persist();
-                    BrokerController.this.consumerOrderInfoManager.persist();
+                    BrokerController.this.consumerOrderInfoManager.persist(); // 10s跑一次 顺序消费信息
                 } catch (Throwable e) {
                     LOG.error(
                         "BrokerController: failed to persist config file of consumerFilter or consumerOrderInfo",

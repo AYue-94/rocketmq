@@ -145,6 +145,7 @@ public class PopLongPollingService extends ServiceThread {
     }
 
     public void notifyMessageArriving(final String topic, final int queueId) {
+        // 消费组
         ConcurrentHashMap<String, Byte> cids = topicCidMap.get(topic);
         if (cids == null) {
             return;

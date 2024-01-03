@@ -185,7 +185,7 @@ public class ReceiptHandleProcessor extends AbstractStartAndShutdown {
         ReceiptHandle handle = ReceiptHandle.decode(messageReceiptHandle.getReceiptHandleStr());
         long current = System.currentTimeMillis();
         try {
-            // renew>=3次结束
+            // renew 失败3次结束
             if (messageReceiptHandle.getRenewRetryTimes() >= proxyConfig.getMaxRenewRetryTimes()) {
                 log.warn("handle has exceed max renewRetryTimes. handle:{}", messageReceiptHandle);
                 return CompletableFuture.completedFuture(null);
