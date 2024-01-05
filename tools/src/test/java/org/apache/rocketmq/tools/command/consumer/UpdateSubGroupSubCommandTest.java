@@ -2,10 +2,14 @@ package org.apache.rocketmq.tools.command.consumer;
 
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 import org.apache.rocketmq.client.exception.MQBrokerException;
 import org.apache.rocketmq.client.exception.MQClientException;
 import org.apache.rocketmq.remoting.exception.RemotingException;
 import org.apache.rocketmq.remoting.protocol.heartbeat.SubscriptionData;
+import org.apache.rocketmq.remoting.protocol.subscription.CustomizedRetryPolicy;
+import org.apache.rocketmq.remoting.protocol.subscription.GroupRetryPolicy;
+import org.apache.rocketmq.remoting.protocol.subscription.GroupRetryPolicyType;
 import org.apache.rocketmq.remoting.protocol.subscription.SubscriptionGroupConfig;
 import org.apache.rocketmq.tools.admin.DefaultMQAdminExt;
 import org.apache.rocketmq.tools.command.CommandUtil;
@@ -28,6 +32,11 @@ public class UpdateSubGroupSubCommandTest {
         for (String addr : masterSet) {
             SubscriptionGroupConfig subscriptionGroupConfig = new SubscriptionGroupConfig();
             subscriptionGroupConfig.setGroupName("fifoConsumer1");
+            subscriptionGroupConfig.setRetryMaxTimes(3);
+            GroupRetryPolicy groupRetryPolicy = new GroupRetryPolicy();
+            groupRetryPolicy.setType(GroupRetryPolicyType.CUSTOMIZED);
+            groupRetryPolicy.setCustomizedRetryPolicy(new CustomizedRetryPolicy(new long[]{TimeUnit.SECONDS.toMillis(1)}));
+            subscriptionGroupConfig.setGroupRetryPolicy(groupRetryPolicy);
             subscriptionGroupConfig.setConsumeMessageOrderly(true); // 设置消费组顺序消费
             mqAdminExt.createAndUpdateSubscriptionGroupConfig(addr, subscriptionGroupConfig);
         }

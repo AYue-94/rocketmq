@@ -206,6 +206,7 @@ public class ProducerProcessor extends AbstractProcessor {
             consumerSendMsgBackRequestHeader.setOriginTopic(handle.getRealTopic(topicName, groupName));
             consumerSendMsgBackRequestHeader.setMaxReconsumeTimes(0);
 
+            // 1. 发送死信队列
             future = this.serviceManager.getMessageService().sendMessageBack(
                 ctx,
                 handle,
@@ -213,6 +214,7 @@ public class ProducerProcessor extends AbstractProcessor {
                 consumerSendMsgBackRequestHeader,
                 timeoutMillis
             ).whenCompleteAsync((remotingCommand, t) -> {
+                // 2. 死信队列发送成功，ack消息，即这条消息被跳过！！！
                 if (t == null && remotingCommand.getCode() == ResponseCode.SUCCESS) {
                     this.messagingProcessor.ackMessage(ctx, handle, messageId,
                         groupName, topicName, timeoutMillis);
