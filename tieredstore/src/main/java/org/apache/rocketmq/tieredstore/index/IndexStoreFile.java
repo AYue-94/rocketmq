@@ -84,20 +84,24 @@ public class IndexStoreFile implements IndexFile {
     private final int indexItemMaxCount;
 
     private final ReadWriteLock fileReadWriteLock;
+    // 状态
     private final AtomicReference<IndexStatusEnum> fileStatus;
     private final AtomicLong beginTimestamp = new AtomicLong(-1L);
     private final AtomicLong endTimestamp = new AtomicLong(-1L);
     private final AtomicInteger hashSlotCount = new AtomicInteger(0);
     private final AtomicInteger indexItemCount = new AtomicInteger(0);
 
+    // UNSEALED状态 初始index文件
     private MappedFile mappedFile;
     private ByteBuffer byteBuffer;
+    // SEALED状态 压缩index文件
     private MappedFile compactMappedFile;
+    // UPLOAD状态 外部存储index文件
     private TieredFileSegment fileSegment;
 
     public IndexStoreFile(TieredMessageStoreConfig storeConfig, long timestamp) throws IOException {
-        this.hashSlotMaxCount = storeConfig.getTieredStoreIndexFileMaxHashSlotNum();
-        this.indexItemMaxCount = storeConfig.getTieredStoreIndexFileMaxIndexNum();
+        this.hashSlotMaxCount = storeConfig.getTieredStoreIndexFileMaxHashSlotNum(); // 500w slot
+        this.indexItemMaxCount = storeConfig.getTieredStoreIndexFileMaxIndexNum(); // 500w * 4 index
         this.fileStatus = new AtomicReference<>(UNSEALED);
         this.fileReadWriteLock = new ReentrantReadWriteLock();
         this.mappedFile = new DefaultMappedFile(
@@ -191,27 +195,29 @@ public class IndexStoreFile implements IndexFile {
         try {
             fileReadWriteLock.writeLock().lock();
 
+            // 当前IndexFile一定是UNSEALED，未压缩在本地
             if (!UNSEALED.equals(fileStatus.get())) {
                 return AppendResult.FILE_FULL;
             }
 
+            // 索引数量溢出，设置文件状态SEALED等待压缩，返回文件已满
             if (this.indexItemCount.get() + keySet.size() >= this.indexItemMaxCount) {
                 this.fileStatus.set(IndexStatusEnum.SEALED);
                 return AppendResult.FILE_FULL;
             }
-
+            // 循环每个key，插入索引
             for (String key : keySet) {
                 int hashCode = this.hashCode(this.buildKey(topic, key));
                 int slotPosition = this.getSlotPosition(hashCode % this.hashSlotMaxCount);
                 int slotOldValue = this.getSlotValue(slotPosition);
                 int timeDiff = (int) ((timestamp - this.beginTimestamp.get()) / 1000L);
-
+                // 构造IndexItem
                 IndexItem indexItem = new IndexItem(
-                    topicId, queueId, offset, size, hashCode, timeDiff, slotOldValue);
+                    topicId, queueId, offset, size, hashCode, timeDiff, slotOldValue/*头插，上一个头节点*/);
                 int itemIndex = this.indexItemCount.incrementAndGet();
                 this.byteBuffer.position(this.getItemPosition(itemIndex));
-                this.byteBuffer.put(indexItem.getByteBuffer());
-                this.byteBuffer.putInt(slotPosition, itemIndex);
+                this.byteBuffer.put(indexItem.getByteBuffer()); // index区域，写入IndexItem
+                this.byteBuffer.putInt(slotPosition, itemIndex); // slot区域，更新slotValue为新IndexItem位置
 
                 if (slotOldValue <= INVALID_INDEX) {
                     this.hashSlotCount.incrementAndGet();
@@ -219,6 +225,7 @@ public class IndexStoreFile implements IndexFile {
                 if (this.endTimestamp.get() < timestamp) {
                     this.endTimestamp.set(timestamp);
                 }
+                // 更新header
                 this.flushNewMetadata(byteBuffer, indexItemMaxCount == this.indexItemCount.get() + 1);
 
                 log.trace("IndexStoreFile put key, timestamp: {}, topic: {}, key: {}, slot: {}, item: {}, previous item: {}, content: {}",
@@ -315,7 +322,9 @@ public class IndexStoreFile implements IndexFile {
         int hashCode = this.hashCode(key);
         int slotPosition = this.getSlotPosition(hashCode % this.hashSlotMaxCount);
 
+        // Step1 读slot buffer
         CompletableFuture<List<IndexItem>> future = this.fileSegment.readAsync(slotPosition, HASH_SLOT_SIZE)
+            // Step2 读index buffer
             .thenCompose(slotBuffer -> {
                 if (slotBuffer.remaining() < HASH_SLOT_SIZE) {
                     log.error("IndexStoreFile query from tiered storage return error slot buffer, " +
@@ -323,12 +332,14 @@ public class IndexStoreFile implements IndexFile {
                     return CompletableFuture.completedFuture(null);
                 }
                 int indexPosition = slotBuffer.getInt();
+                // 限制最多只能读1024条索引
                 int indexTotalSize = Math.min(slotBuffer.getInt(), COMPACT_INDEX_ITEM_SIZE * 1024);
                 if (indexPosition <= INVALID_INDEX || indexTotalSize <= 0) {
                     return CompletableFuture.completedFuture(null);
                 }
                 return this.fileSegment.readAsync(indexPosition, indexTotalSize);
             })
+            // Step3 反序列化 匹配key和time
             .thenApply(itemBuffer -> {
                 List<IndexItem> result = new ArrayList<>();
                 if (itemBuffer == null) {
@@ -345,8 +356,10 @@ public class IndexStoreFile implements IndexFile {
                 byte[] bytes = new byte[COMPACT_INDEX_ITEM_SIZE];
                 for (int i = 0; i < size; i++) {
                     itemBuffer.get(bytes);
+                    // 反序列化
                     IndexItem indexItem = new IndexItem(bytes);
                     long storeTimestamp = indexItem.getTimeDiff() + beginTimestamp.get();
+                    // hash 时间 匹配
                     if (hashCode == indexItem.getHashCode() &&
                         beginTime <= storeTimestamp && storeTimestamp <= endTime &&
                         result.size() < maxCount) {
@@ -412,24 +425,30 @@ public class IndexStoreFile implements IndexFile {
 
         byte[] payload = new byte[IndexItem.INDEX_ITEM_SIZE];
         ByteBuffer payloadBuffer = ByteBuffer.wrap(payload);
+        // 索引写入位置 = header + slot最大数量（500w）*slot大小（8）
         int writePosition = INDEX_HEADER_SIZE + (hashSlotMaxCount * HASH_SLOT_SIZE);
+        // 文件大小 = header + slot最大数量（500w）*slot大小（8） + index数量*压缩index大小（28）
         int fileMaxLength = writePosition + COMPACT_INDEX_ITEM_SIZE * indexItemCount.get();
-
+        // compacting文件
         compactMappedFile = new DefaultMappedFile(this.getCompactedFilePath(), fileMaxLength);
         MappedByteBuffer newBuffer = compactMappedFile.getMappedByteBuffer();
 
+        // 循环处理所有slot（500w个）
         for (int i = 0; i < hashSlotMaxCount; i++) {
             int slotPosition = this.getSlotPosition(i);
             int slotValue = this.getSlotValue(slotPosition);
             int writeBeginPosition = writePosition;
 
+            // 迭代一个slot中的所有IndexItem
             while (slotValue > INVALID_INDEX && writePosition < fileMaxLength) {
                 ByteBuffer buffer = this.byteBuffer.duplicate();
                 buffer.position(this.getItemPosition(slotValue));
                 buffer.get(payload);
                 int newSlotValue = payloadBuffer.getInt(COMPACT_INDEX_ITEM_SIZE);
                 buffer.limit(COMPACT_INDEX_ITEM_SIZE);
+                // 同一个slot的index，顺序写入
                 newBuffer.position(writePosition);
+                // 抛弃原始indexItem的后4个byte
                 newBuffer.put(payload, 0, COMPACT_INDEX_ITEM_SIZE);
                 log.trace("IndexStoreFile do compaction, write item, slot: {}, current: {}, next: {}", i, slotValue, newSlotValue);
                 slotValue = newSlotValue;
@@ -437,14 +456,17 @@ public class IndexStoreFile implements IndexFile {
             }
 
             int length = writePosition - writeBeginPosition;
+            // 写入slot
+            // 0-4byte=这个slot中所有IndexItem的起始位置
             newBuffer.putInt(slotPosition, writeBeginPosition);
+            // 5-8byte=这个slot中所有IndexItem的总长度
             newBuffer.putInt(slotPosition + Integer.BYTES, length);
 
             if (length > 0) {
                 log.trace("IndexStoreFile do compaction, write slot, slot: {}, begin: {}, length: {}", i, writeBeginPosition, length);
             }
         }
-
+        // 写入header
         this.flushNewMetadata(newBuffer, true);
         newBuffer.flip();
         return newBuffer;

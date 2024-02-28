@@ -66,7 +66,9 @@ public class TieredMessageFetcher implements MessageStoreFetcher {
     private final String brokerName;
     private final TieredMetadataStore metadataStore;
     private final TieredMessageStoreConfig storeConfig;
+    // 数据
     private final TieredFlatFileManager flatFileManager;
+    // caffeine 缓存
     private final Cache<MessageCacheKey, SelectBufferResultWrapper> readAheadCache;
 
     public TieredMessageFetcher(TieredMessageStoreConfig storeConfig) {
@@ -78,15 +80,19 @@ public class TieredMessageFetcher implements MessageStoreFetcher {
     }
 
     private Cache<MessageCacheKey, SelectBufferResultWrapper> initCache(TieredMessageStoreConfig storeConfig) {
+        // 0.3 * 最大堆内存（-Xmx）
         long memoryMaxSize =
             (long) (Runtime.getRuntime().maxMemory() * storeConfig.getReadAheadCacheSizeThresholdRate());
 
         return Caffeine.newBuilder()
             .scheduler(Scheduler.systemScheduler())
+            // 写后10s过期
             .expireAfterWrite(storeConfig.getReadAheadCacheExpireDuration(), TimeUnit.MILLISECONDS)
+            // 最大容量限制 0.3 * 最大堆内存（-Xmx）
             .maximumWeight(memoryMaxSize)
             // Using the buffer size of messages to calculate memory usage
             .weigher((MessageCacheKey key, SelectBufferResultWrapper msg) -> msg.getBufferSize())
+            // 开启metrics统计
             .recordStats()
             .build();
     }
@@ -124,6 +130,8 @@ public class TieredMessageFetcher implements MessageStoreFetcher {
 
         // make sure there is only one request per group and request range
         int prefetchBatchSize = Math.min(maxCount * flatFile.getReadAheadFactor(), storeConfig.getReadAheadMessageCountThreshold());
+
+        // 如果上一批预读还未完成，返回
         InFlightRequestFuture inflightRequest = flatFile.getInflightRequest(group, nextBeginOffset, prefetchBatchSize);
         if (!inflightRequest.isAllDone()) {
             return;
@@ -135,12 +143,18 @@ public class TieredMessageFetcher implements MessageStoreFetcher {
                 return;
             }
 
+            // 上一批预读的最后一个offset
             long maxOffsetOfLastRequest = inflightRequest.getLastFuture().join();
+
+            // 查询预读到的缓存是否过期（或者没有预读）
             boolean lastRequestIsExpired = getMessageFromCache(flatFile, nextBeginOffset) == null;
 
-            if (lastRequestIsExpired ||
+            // 执行预读
+            if (lastRequestIsExpired || // 未预读
+                // 预读结束
                 maxOffsetOfLastRequest != -1L && nextBeginOffset >= inflightRequest.getStartOffset()) {
 
+                // 动态调整ReadAheadFactor
                 long queueOffset;
                 if (lastRequestIsExpired) {
                     queueOffset = nextBeginOffset;
@@ -150,6 +164,7 @@ public class TieredMessageFetcher implements MessageStoreFetcher {
                     flatFile.increaseReadAheadFactor();
                 }
 
+                // 决定分n批，每批拉n条消息
                 int factor = Math.min(flatFile.getReadAheadFactor(), storeConfig.getReadAheadMessageCountThreshold() / maxCount);
                 int flag = 0;
                 int concurrency = 1;
@@ -161,16 +176,21 @@ public class TieredMessageFetcher implements MessageStoreFetcher {
 
                 List<Pair<Integer, CompletableFuture<Long>>> futureList = new ArrayList<>();
                 long nextQueueOffset = queueOffset;
+                // 第一批
                 if (flag == 1) {
                     int firstBatchSize = factor % storeConfig.getReadAheadBatchSizeFactorThreshold() * maxCount;
+                    // 查消息放缓存，返回这批消息的最大offset
                     CompletableFuture<Long> future = prefetchMessageThenPutToCache(flatFile, nextQueueOffset, firstBatchSize);
                     futureList.add(Pair.of(firstBatchSize, future));
                     nextQueueOffset += firstBatchSize;
                 }
+                // 第2-n批
                 for (long i = 0; i < concurrency - flag; i++) {
+                    // 查消息放缓存，返回这批消息的最大offset
                     CompletableFuture<Long> future = prefetchMessageThenPutToCache(flatFile, nextQueueOffset + i * requestBatchSize, requestBatchSize);
                     futureList.add(Pair.of(requestBatchSize, future));
                 }
+                // 放入future
                 flatFile.putInflightRequest(group, queueOffset, maxCount * factor, futureList);
                 LOGGER.debug("TieredMessageFetcher#preFetchMessage: try to prefetch messages for later requests: next begin offset: {}, request offset: {}, factor: {}, flag: {}, request batch: {}, concurrency: {}",
                     nextBeginOffset, queueOffset, factor, flag, requestBatchSize, concurrency);
@@ -182,7 +202,9 @@ public class TieredMessageFetcher implements MessageStoreFetcher {
         CompositeQueueFlatFile flatFile, long queueOffset, int batchSize) {
 
         MessageQueue mq = flatFile.getMessageQueue();
+        // 查消息
         return getMessageFromTieredStoreAsync(flatFile, queueOffset, batchSize)
+            // 放缓存
             .thenApply(result -> {
                 if (result.getStatus() == GetMessageStatus.OFFSET_OVERFLOW_ONE ||
                     result.getStatus() == GetMessageStatus.OFFSET_OVERFLOW_BADLY) {
@@ -219,6 +241,7 @@ public class TieredMessageFetcher implements MessageStoreFetcher {
 
         MessageQueue mq = flatFile.getMessageQueue();
 
+        // 1. 从本地缓存查询消息
         long lastGetOffset = queueOffset - 1;
         List<SelectBufferResultWrapper> resultWrapperList = new ArrayList<>(maxCount);
         for (int i = 0; i < maxCount; i++) {
@@ -243,6 +266,8 @@ public class TieredMessageFetcher implements MessageStoreFetcher {
 
         // If there are no messages in the cache and there are currently requests being pulled.
         // We need to wait for the request to return before continuing.
+        // 2. 如果cache miss 且 offset对应消息正在被prefetch
+        // thenComposeAsync等待prefetch结束后，再重新走查询流程getMessageFromCacheAsync
         if (resultWrapperList.isEmpty() && waitInflightRequest) {
             CompletableFuture<Long> future =
                 flatFile.getInflightRequest(group, queueOffset, maxCount).getFuture(queueOffset);
@@ -257,6 +282,7 @@ public class TieredMessageFetcher implements MessageStoreFetcher {
             }
         }
 
+        // 3. 如果cache miss 且 prefetch结束，再次尝试从本地缓存查询消息
         // try to get message from cache again when prefetch request is done
         for (int i = 0; i < maxCount - resultWrapperList.size(); i++) {
             lastGetOffset++;
@@ -279,6 +305,8 @@ public class TieredMessageFetcher implements MessageStoreFetcher {
             LOGGER.debug("MessageFetcher cache hit, group: {}, topic: {}, queueId: {}, offset: {}, maxCount: {}, resultSize: {}",
                 group, mq.getTopic(), mq.getQueueId(), queueOffset, maxCount, resultWrapperList.size());
 
+            // 4. 缓存命中
+            // 4-1. 组装结果
             GetMessageResultExt result = new GetMessageResultExt();
             result.setStatus(GetMessageStatus.FOUND);
             result.setMinOffset(flatFile.getConsumeQueueMinOffset());
@@ -286,22 +314,25 @@ public class TieredMessageFetcher implements MessageStoreFetcher {
             result.setNextBeginOffset(queueOffset + resultWrapperList.size());
             resultWrapperList.forEach(wrapper -> result.addMessageExt(
                 wrapper.getDuplicateResult(), wrapper.getOffset(), wrapper.getTagCode()));
-
+            // 4-2. 如果后面还有消息，发起prefetch
             if (lastGetOffset < result.getMaxOffset()) {
                 this.prefetchMessage(flatFile, group, maxCount, lastGetOffset + 1);
             }
             return CompletableFuture.completedFuture(result);
         }
 
+        // 5. 缓存未命中
         CompletableFuture<GetMessageResultExt> resultFuture;
         synchronized (flatFile) {
             int batchSize = maxCount * storeConfig.getReadAheadMinFactor();
+            // 5-1. 从分层存储读消息 数量 = maxCount * 2 （预读）
             resultFuture = getMessageFromTieredStoreAsync(flatFile, queueOffset, batchSize)
-                .thenApply(result -> {
+                .thenApply(result/*GetMessageResultExt*/ -> {
                     if (result.getStatus() != GetMessageStatus.FOUND) {
                         return result;
                     }
 
+                    // 处理GetMessageResultExt，组装结果，放入本地缓存
                     GetMessageResultExt newResult = new GetMessageResultExt();
                     List<Long> offsetList = result.getMessageQueueOffset();
                     List<Long> tagCodeList = result.getTagCodeList();
@@ -311,7 +342,7 @@ public class TieredMessageFetcher implements MessageStoreFetcher {
                         SelectMappedBufferResult msg = msgList.get(i);
                         SelectBufferResultWrapper bufferResult = new SelectBufferResultWrapper(
                             msg, offsetList.get(i), tagCodeList.get(i), true);
-                        this.putMessageToCache(flatFile, bufferResult);
+                        this.putMessageToCache(flatFile, bufferResult); // 缓存
                         if (newResult.getMessageMapedList().size() < maxCount) {
                             newResult.addMessageExt(msg, offsetList.get(i), tagCodeList.get(i));
                         }
@@ -323,7 +354,7 @@ public class TieredMessageFetcher implements MessageStoreFetcher {
                     newResult.setNextBeginOffset(queueOffset + newResult.getMessageMapedList().size());
                     return newResult;
                 });
-
+            // 5-2. 放入预读inflightRequestFuture
             List<Pair<Integer, CompletableFuture<Long>>> futureList = new ArrayList<>();
             CompletableFuture<Long> inflightRequestFuture = resultFuture.thenApply(result ->
                 result.getStatus() == GetMessageStatus.FOUND ?
@@ -358,6 +389,7 @@ public class TieredMessageFetcher implements MessageStoreFetcher {
             flatFile.getMessageQueue().getTopic(), flatFile.getMessageQueue().getQueueId(),
             result.getMinOffset(), result.getMaxOffset(), queueOffset, batchSize);
 
+        // 1. 读consumequeue
         CompletableFuture<ByteBuffer> readConsumeQueueFuture;
         try {
             readConsumeQueueFuture = flatFile.getConsumeQueueAsync(queueOffset, batchSize);
@@ -376,6 +408,7 @@ public class TieredMessageFetcher implements MessageStoreFetcher {
             }
         }
 
+        // 2. 读commitlog
         CompletableFuture<ByteBuffer> readCommitLogFuture = readConsumeQueueFuture.thenCompose(cqBuffer -> {
             long firstCommitLogOffset = CQItemBufferUtil.getCommitLogOffset(cqBuffer);
             cqBuffer.position(cqBuffer.remaining() - TieredConsumeQueue.CONSUME_QUEUE_STORE_UNIT_SIZE);
@@ -390,6 +423,7 @@ public class TieredMessageFetcher implements MessageStoreFetcher {
             }
 
             // Get the total size of the data by reducing the length limit of cq to prevent OOM
+            // 如果要读readAheadMessageSizeThreshold=128m以上commitlog，截断到128m以内
             long length = lastCommitLogOffset - firstCommitLogOffset + CQItemBufferUtil.getSize(cqBuffer);
             while (cqBuffer.limit() > TieredConsumeQueue.CONSUME_QUEUE_STORE_UNIT_SIZE &&
                 length > storeConfig.getReadAheadMessageSizeThreshold()) {
@@ -403,6 +437,7 @@ public class TieredMessageFetcher implements MessageStoreFetcher {
         });
 
         int finalBatchSize = batchSize;
+        // 3. 构造查询结果
         return readConsumeQueueFuture.thenCombine(readCommitLogFuture, (cqBuffer, msgBuffer) -> {
             List<SelectBufferResult> bufferList = MessageBufferUtil.splitMessageBuffer(cqBuffer, msgBuffer);
             int requestSize = cqBuffer.remaining() / TieredConsumeQueue.CONSUME_QUEUE_STORE_UNIT_SIZE;
@@ -439,6 +474,7 @@ public class TieredMessageFetcher implements MessageStoreFetcher {
         GetMessageResult result = new GetMessageResult();
         CompositeQueueFlatFile flatFile = flatFileManager.getFlatFile(new MessageQueue(topic, brokerName, queueId));
 
+        // 1、队列还未创建 分层存储 返回 NO_MATCHED_LOGIC_QUEUE
         if (flatFile == null) {
             result.setNextBeginOffset(queueOffset);
             result.setStatus(GetMessageStatus.NO_MATCHED_LOGIC_QUEUE);
@@ -456,7 +492,7 @@ public class TieredMessageFetcher implements MessageStoreFetcher {
         // [min, max)    | correct          |
         // [max, max]    | overflow one     | max offset
         // (max, +oo)    | overflow badly   | max offset
-
+        // 2、请求offset是否在分层存储中
         if (result.getMaxOffset() <= 0) {
             result.setStatus(GetMessageStatus.NO_MESSAGE_IN_QUEUE);
             result.setNextBeginOffset(queueOffset);
@@ -475,7 +511,9 @@ public class TieredMessageFetcher implements MessageStoreFetcher {
             return CompletableFuture.completedFuture(result);
         }
 
+        // 3、进入分层存储查询
         return getMessageFromCacheAsync(flatFile, group, queueOffset, maxCount, true)
+            // tag过滤忽略
             .thenApply(messageResultExt -> messageResultExt.doFilterMessage(messageFilter));
     }
 
@@ -536,6 +574,7 @@ public class TieredMessageFetcher implements MessageStoreFetcher {
 
         IndexService indexStoreService = TieredFlatFileManager.getTieredIndexService(storeConfig);
 
+        // 查询topic对应元数据，获得topicId
         long topicId;
         try {
             TopicMetadata topicMetadata = metadataStore.getTopic(topic);
@@ -549,6 +588,7 @@ public class TieredMessageFetcher implements MessageStoreFetcher {
             return CompletableFuture.completedFuture(new QueryMessageResult());
         }
 
+        // 查询索引项
         CompletableFuture<List<IndexItem>> future = indexStoreService.queryAsync(topic, key, maxCount, begin, end);
 
         return future.thenCompose(indexItemList -> {
@@ -558,12 +598,14 @@ public class TieredMessageFetcher implements MessageStoreFetcher {
                 if (topicId != indexItem.getTopicId()) {
                     continue;
                 }
+                // 定位queue对应FlatFile
                 CompositeFlatFile flatFile =
                     flatFileManager.getFlatFile(new MessageQueue(topic, brokerName, indexItem.getQueueId()));
                 if (flatFile == null) {
                     continue;
                 }
                 CompletableFuture<Void> getMessageFuture = flatFile
+                    // 直接读commitlog，无缓存，无预读
                     .getCommitLogAsync(indexItem.getOffset(), indexItem.getSize())
                     .thenAccept(messageBuffer -> result.addMessage(
                         new SelectMappedBufferResult(

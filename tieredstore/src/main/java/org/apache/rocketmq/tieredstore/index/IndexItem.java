@@ -20,17 +20,18 @@ package org.apache.rocketmq.tieredstore.index;
 import java.nio.ByteBuffer;
 
 public class IndexItem {
-
+    // 追加写入格式，32byte
     public static final int INDEX_ITEM_SIZE = 32;
+    // 压缩写入格式，28byte
     public static final int COMPACT_INDEX_ITEM_SIZE = 28;
 
-    private final int hashCode;
+    private final int hashCode; // 和主存一致，key哈希
     private final int topicId;
     private final int queueId;
-    private final long offset;
+    private final long offset; // 和主存一致，物理offset
     private final int size;
-    private final int timeDiff;
-    private final int itemIndex;
+    private final int timeDiff; // 和主存一致，时间偏移量
+    private final int itemIndex; // 和主存一致，即slotValue，压缩格式下不存在
 
     public IndexItem(int topicId, int queueId, long offset, int size, int hashCode, int timeDiff, int itemIndex) {
         this.hashCode = hashCode;

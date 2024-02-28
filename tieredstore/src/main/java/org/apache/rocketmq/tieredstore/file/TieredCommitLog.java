@@ -164,8 +164,8 @@ public class TieredCommitLog {
         TieredFileSegment fileSegment = flatFile.getFileToWrite();
         try {
             if (System.currentTimeMillis() - fileSegment.getMaxTimestamp() >
-                TimeUnit.HOURS.toMillis(storeConfig.getCommitLogRollingInterval())
-                && fileSegment.getAppendPosition() > storeConfig.getCommitLogRollingMinimumSize()) {
+                TimeUnit.HOURS.toMillis(storeConfig.getCommitLogRollingInterval()) // 24h
+                && fileSegment.getAppendPosition() > storeConfig.getCommitLogRollingMinimumSize()) { // 128MB
                 flatFile.rollingNewFile();
             }
         } catch (Exception e) {

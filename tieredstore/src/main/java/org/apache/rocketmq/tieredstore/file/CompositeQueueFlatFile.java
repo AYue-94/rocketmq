@@ -96,7 +96,7 @@ public class CompositeQueueFlatFile extends CompositeFlatFile {
         }
 
         return indexStoreService.putKey(
-            messageQueue.getTopic(), (int) topicSequenceNumber, messageQueue.getQueueId(), keySet,
+            messageQueue.getTopic(), (int) topicSequenceNumber/*topicId*/, messageQueue.getQueueId(), keySet,
             request.getCommitLogOffset(), request.getMsgSize(), request.getStoreTimestamp());
     }
 

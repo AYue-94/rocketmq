@@ -1261,6 +1261,7 @@ public class DefaultMessageStore implements MessageStore {
         long lastQueryMsgTime = end;
 
         for (int i = 0; i < 3; i++) {
+            // 查询得到所有物理offset
             QueryOffsetResult queryOffsetResult = this.indexService.queryOffset(topic, key, maxNum, begin, lastQueryMsgTime);
             if (queryOffsetResult.getPhyOffsets().isEmpty()) {
                 break;
@@ -1271,6 +1272,7 @@ public class DefaultMessageStore implements MessageStore {
             queryMessageResult.setIndexLastUpdatePhyoffset(queryOffsetResult.getIndexLastUpdatePhyoffset());
             queryMessageResult.setIndexLastUpdateTimestamp(queryOffsetResult.getIndexLastUpdateTimestamp());
 
+            // 循环物理offset
             for (int m = 0; m < queryOffsetResult.getPhyOffsets().size(); m++) {
                 long offset = queryOffsetResult.getPhyOffsets().get(m);
 
@@ -1279,7 +1281,7 @@ public class DefaultMessageStore implements MessageStore {
                     if (0 == m) {
                         lastQueryMsgTime = msg.getStoreTimestamp();
                     }
-
+                    // 查询消息
                     SelectMappedBufferResult result = this.commitLog.getData(offset, false);
                     if (result != null) {
                         int size = result.getByteBuffer().getInt(0);

@@ -63,11 +63,15 @@ public class TieredMessageStore extends AbstractPluginMessageStore {
     protected static final Logger logger = LoggerFactory.getLogger(TieredStoreUtil.TIERED_STORE_LOGGER_NAME);
 
     protected final String brokerName;
+    // 分层存储配置
     protected final TieredMessageStoreConfig storeConfig;
+    // 存储【元数据】 默认实现TieredMetadataManager storePath/config/tieredStoreMetadata.json
     protected final TieredMetadataStore metadataStore;
-
+    // 【写请求】CommitLogDispatcher实现类 处理 DispatchRequest
     protected final TieredDispatcher dispatcher;
+    // 【读请求】TieredMessageFetcher
     protected final TieredMessageFetcher fetcher;
+    // 存储【实际数据】包括CommitLog/ConsumeQueue/Index
     protected final TieredFlatFileManager flatFileManager;
 
     public TieredMessageStore(MessageStorePluginContext context, MessageStore next) {
@@ -89,7 +93,9 @@ public class TieredMessageStore extends AbstractPluginMessageStore {
 
     @Override
     public boolean load() {
+        // TieredFlatFileManager
         boolean loadFlatFile = flatFileManager.load();
+        // DefaultMessageStore
         boolean loadNextStore = next.load();
         boolean result = loadFlatFile && loadNextStore;
         if (result) {
@@ -110,33 +116,41 @@ public class TieredMessageStore extends AbstractPluginMessageStore {
     public boolean fetchFromCurrentStore(String topic, int queueId, long offset, int batchSize) {
         TieredMessageStoreConfig.TieredStorageLevel deepStorageLevel = storeConfig.getTieredStorageLevel();
 
+        // FORCE - 强制走分层存储
         if (deepStorageLevel.check(TieredMessageStoreConfig.TieredStorageLevel.FORCE)) {
             return true;
         }
 
+        // DISABLE - 强制走主存
         if (!deepStorageLevel.isEnable()) {
             return false;
         }
 
+        // 查询分层存储文件为空 走主存
         CompositeFlatFile flatFile = flatFileManager.getFlatFile(new MessageQueue(topic, brokerName, queueId));
         if (flatFile == null) {
             return false;
         }
 
+        // 查询offset 超出 分层存储offset 走主存
         if (offset >= flatFile.getConsumeQueueCommitOffset()) {
             return false;
         }
 
+        // 【默认】NOT_IN_DISK 查询offset不在主存磁盘上，走分层
         // determine whether tiered storage path conditions are met
         if (deepStorageLevel.check(TieredMessageStoreConfig.TieredStorageLevel.NOT_IN_DISK)
             && !next.checkInStoreByConsumeOffset(topic, queueId, offset)) {
             return true;
         }
 
+        // NOT_IN_MEM - 查询offset不在主存pagecache，走分层
         if (deepStorageLevel.check(TieredMessageStoreConfig.TieredStorageLevel.NOT_IN_MEM)
             && !next.checkInMemByConsumeOffset(topic, queueId, offset, batchSize)) {
             return true;
         }
+
+        // 其他，走主存
         return false;
     }
 
@@ -151,10 +165,13 @@ public class TieredMessageStore extends AbstractPluginMessageStore {
         int queueId, long offset, int maxMsgNums, MessageFilter messageFilter) {
 
         // For system topic, force reading from local store
+
+        // 1. 系统topic，走主存
         if (TieredStoreUtil.isSystemTopic(topic) || PopAckConstants.isStartWithRevivePrefix(topic)) {
             return next.getMessageAsync(group, topic, queueId, offset, maxMsgNums, messageFilter);
         }
 
+        // 2. 根据tieredStorageLevel决策是否走主存，默认NOT_IN_DISK
         if (fetchFromCurrentStore(topic, queueId, offset, maxMsgNums)) {
             logger.trace("GetMessageAsync from current store, topic: {}, queue: {}, offset: {}", topic, queueId, offset);
         } else {
@@ -164,8 +181,10 @@ public class TieredMessageStore extends AbstractPluginMessageStore {
 
         Stopwatch stopwatch = Stopwatch.createStarted();
         return fetcher
+            // 3. fetcher查询返回GetMessageResult
             .getMessageAsync(group, topic, queueId, offset, maxMsgNums, messageFilter)
-            .thenApply(result -> {
+            // 4. 处理GetMessageResult
+            .thenApply(result/*GetMessageResult*/ -> {
 
                 Attributes latencyAttributes = TieredStoreMetricsManager.newAttributesBuilder()
                     .put(TieredStoreMetricsConstant.LABEL_OPERATION, TieredStoreMetricsConstant.OPERATION_API_GET_MESSAGE)
@@ -174,8 +193,9 @@ public class TieredMessageStore extends AbstractPluginMessageStore {
                     .build();
                 TieredStoreMetricsManager.apiLatency.record(stopwatch.elapsed(TimeUnit.MILLISECONDS), latencyAttributes);
 
-                if (result.getStatus() == GetMessageStatus.OFFSET_FOUND_NULL ||
-                    result.getStatus() == GetMessageStatus.NO_MATCHED_LOGIC_QUEUE) {
+                // 4-1 如果分层存储不存在/查询失败，且，消息在主存磁盘上，走主存
+                if (result.getStatus() == GetMessageStatus.OFFSET_FOUND_NULL || // 查询分层存储失败
+                    result.getStatus() == GetMessageStatus.NO_MATCHED_LOGIC_QUEUE) { // 没这个存储
 
                     if (next.checkInStoreByConsumeOffset(topic, queueId, offset)) {
                         TieredStoreMetricsManager.fallbackTotal.add(1, latencyAttributes);
@@ -330,19 +350,25 @@ public class TieredMessageStore extends AbstractPluginMessageStore {
     @Override
     public CompletableFuture<QueryMessageResult> queryMessageAsync(String topic, String key,
         int maxNum, long begin, long end) {
+        // 从主存中拿到第一个消息的存储时间
         long earliestTimeInNextStore = next.getEarliestMessageTime();
         if (earliestTimeInNextStore <= 0) {
             logger.warn("TieredMessageStore#queryMessageAsync: get earliest message time in next store failed: {}", earliestTimeInNextStore);
         }
+        // 判断是否走分层存储
         boolean isForce = storeConfig.getTieredStorageLevel() == TieredMessageStoreConfig.TieredStorageLevel.FORCE;
         QueryMessageResult result = end < earliestTimeInNextStore || isForce ?
             new QueryMessageResult() :
+            // 非force 且 查询时间区间end包含commitlog，先查主存
             next.queryMessage(topic, key, maxNum, begin, end);
         int resultSize = result.getMessageBufferList().size();
+        // force 或 未拉满消息 查询时间区间begin小于commitlog
         if (resultSize < maxNum && begin < earliestTimeInNextStore || isForce) {
             Stopwatch stopwatch = Stopwatch.createStarted();
             try {
-                return fetcher.queryMessageAsync(topic, key, maxNum - resultSize, begin, isForce ? end : earliestTimeInNextStore)
+                // 走分层存储
+                return fetcher.queryMessageAsync(topic, key, maxNum - resultSize, begin,
+                        isForce ? end : earliestTimeInNextStore)
                     .thenApply(tieredStoreResult -> {
                         Attributes latencyAttributes = TieredStoreMetricsManager.newAttributesBuilder()
                             .put(TieredStoreMetricsConstant.LABEL_OPERATION, TieredStoreMetricsConstant.OPERATION_API_QUERY_MESSAGE)

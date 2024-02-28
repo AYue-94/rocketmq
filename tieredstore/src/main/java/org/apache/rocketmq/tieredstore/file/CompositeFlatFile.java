@@ -431,6 +431,9 @@ public class CompositeFlatFile implements CompositeAccess {
             .stream()
             .filter(entry -> {
                 InFlightRequestKey key = entry.getKey();
+                // future和入参有交集
+                // [offset,offset+size]
+                //          [offset,offset+size]
                 return Math.max(key.getOffset(), offset) <= Math.min(key.getOffset() + key.getBatchSize(), offset + batchSize);
             })
             .max(Comparator.comparing(entry -> entry.getKey().getRequestTime()))

@@ -309,6 +309,7 @@ public class TieredFlatFile {
                 if (!segment.isFull()) {
                     return segment;
                 }
+                // segement满了，同步刷盘，更新segement元数据
                 if (segment.commit()) {
                     try {
                         this.updateFileSegment(segment);
@@ -321,6 +322,7 @@ public class TieredFlatFile {
 
                 offset = segment.getMaxOffset();
             }
+            // 滚动到一个新的segement
             TieredFileSegment fileSegment = this.newSegment(fileType, offset, true);
             fileSegmentList.add(fileSegment);
             needCommitFileSegmentList.add(fileSegment);
@@ -410,11 +412,16 @@ public class TieredFlatFile {
     }
 
     public AppendResult append(ByteBuffer byteBuf, long timeStamp, boolean commit) {
+        // 找到写入segement
         TieredFileSegment fileSegment = getFileToWrite();
+        // append
         AppendResult result = fileSegment.append(byteBuf, timeStamp);
+        // 如果buffer满了，如果要求commit，同步commit一下
         if (commit && result == AppendResult.BUFFER_FULL && fileSegment.commit()) {
+            // append
             result = fileSegment.append(byteBuf, timeStamp);
         }
+        // 如果文件满了，getFileToWrite滚动一下，再次append
         if (result == AppendResult.FILE_FULL) {
             // write to new file
             return getFileToWrite().append(byteBuf, timeStamp);
@@ -423,6 +430,7 @@ public class TieredFlatFile {
     }
 
     public int cleanExpiredFile(long expireTimestamp) {
+        // 根据最大存储时间，过滤得到待删除的segment初始偏移量
         Set<Long> needToDeleteSet = new HashSet<>();
         try {
             tieredMetadataStore.iterateFileSegment(filePath, fileType, metadata -> {
@@ -445,11 +453,11 @@ public class TieredFlatFile {
                 TieredFileSegment fileSegment = fileSegmentList.get(i);
                 try {
                     if (needToDeleteSet.contains(fileSegment.getBaseOffset())) {
-                        fileSegment.close();
+                        fileSegment.close(); // 设置closed=true
                         fileSegmentList.remove(fileSegment);
                         needCommitFileSegmentList.remove(fileSegment);
                         i--;
-                        this.updateFileSegment(fileSegment);
+                        this.updateFileSegment(fileSegment); // 更新元数据
                         logger.debug("Clean expired file, filePath: {}", fileSegment.getPath());
                     } else {
                         break;
@@ -484,8 +492,8 @@ public class TieredFlatFile {
                     try {
                         TieredFileSegment fileSegment =
                             this.newSegment(fileType, metadata.getBaseOffset(), false);
-                        fileSegment.destroyFile();
-                        if (!fileSegment.exists()) {
+                        fileSegment.destroyFile(); // 用户实现
+                        if (!fileSegment.exists()) { // 用户实现
                             tieredMetadataStore.deleteFileSegment(filePath, fileType, metadata.getBaseOffset());
                         }
                     } catch (Exception e) {
@@ -507,9 +515,10 @@ public class TieredFlatFile {
                     continue;
                 }
                 futureList.add(segment
-                    .commitAsync()
+                    .commitAsync() // 执行segment commit
                     .thenAccept(success -> {
                         try {
+                            // 更新元数据
                             this.updateFileSegment(segment);
                         } catch (Exception e) {
                             // TODO handle update segment metadata failed exception
@@ -517,6 +526,7 @@ public class TieredFlatFile {
                                     "file path: {}, file type: {}, base offset: {}",
                                 filePath, fileType, segment.getBaseOffset(), e);
                         }
+                        // segment满了，从待刷盘segment中移除
                         if (segment.isFull() && !segment.needCommit()) {
                             needCommitFileSegmentList.remove(segment);
                         }
@@ -532,6 +542,7 @@ public class TieredFlatFile {
     }
 
     public CompletableFuture<ByteBuffer> readAsync(long offset, int length) {
+        // 根据offset找到对应segement
         int index = getSegmentIndexByOffset(offset);
         if (index == -1) {
             String errorMsg = String.format("TieredFlatFile#readAsync: offset is illegal, " +
@@ -545,6 +556,7 @@ public class TieredFlatFile {
         fileSegmentLock.readLock().lock();
         try {
             fileSegment1 = fileSegmentList.get(index);
+            // 特殊case，offset+length跨segement
             if (offset + length > fileSegment1.getCommitOffset()) {
                 if (fileSegmentList.size() > index + 1) {
                     fileSegment2 = fileSegmentList.get(index + 1);
@@ -553,9 +565,11 @@ public class TieredFlatFile {
         } finally {
             fileSegmentLock.readLock().unlock();
         }
+        // 一般情况，offset+length都在一个segement中
         if (fileSegment2 == null) {
             return fileSegment1.readAsync(offset - fileSegment1.getBaseOffset(), length);
         }
+        // 特殊情况，offset+length跨segement
         int segment1Length = (int) (fileSegment1.getCommitOffset() - offset);
         return fileSegment1.readAsync(offset - fileSegment1.getBaseOffset(), segment1Length)
             .thenCombine(fileSegment2.readAsync(0, length - segment1Length), (buffer1, buffer2) -> {

@@ -61,13 +61,17 @@ public class IndexStoreService extends ServiceThread implements IndexService {
      * upload, upload, upload, sealed, sealed, unsealed
      */
     private final TieredMessageStoreConfig storeConfig;
+    // 时间戳 - index文件
     private final ConcurrentSkipListMap<Long /* timestamp */, IndexFile> timeStoreTable;
     private final ReadWriteLock readWriteLock;
+    // 下一个待压缩的IndexFile对应时间戳-1
     private final AtomicLong compactTimestamp;
+    // broker/rmq_sys_INDEX/0
     private final String filePath;
     private final TieredFileAllocator fileAllocator;
-
+    // 当前写入index文件（UNSEALED）
     private IndexFile currentWriteFile;
+    // broker/rmq_sys_INDEX/0下的多个segment
     private TieredFlatFile flatFile;
 
     public IndexStoreService(TieredFileAllocator fileAllocator, String filePath) {
@@ -217,6 +221,7 @@ public class IndexStoreService extends ServiceThread implements IndexService {
         CompletableFuture<List<IndexItem>> future = new CompletableFuture<>();
         try {
             readWriteLock.readLock().lock();
+            // 根据时间区间，找到所有IndexFile
             ConcurrentNavigableMap<Long, IndexFile> pendingMap =
                 this.timeStoreTable.subMap(beginTime, true, endTime, true);
             List<CompletableFuture<Void>> futureList = new ArrayList<>(pendingMap.size());
@@ -224,6 +229,7 @@ public class IndexStoreService extends ServiceThread implements IndexService {
 
             for (Map.Entry<Long, IndexFile> entry : pendingMap.descendingMap().entrySet()) {
                 CompletableFuture<Void> completableFuture = entry.getValue()
+                    // IndexFile#queryAsync
                     .queryAsync(topic, key, maxCount, beginTime, endTime)
                     .thenAccept(itemList -> itemList.forEach(indexItem -> {
                         if (result.size() < maxCount) {
@@ -262,12 +268,15 @@ public class IndexStoreService extends ServiceThread implements IndexService {
         }
 
         Stopwatch stopwatch = Stopwatch.createStarted();
+        // 压缩
         ByteBuffer byteBuffer = indexFile.doCompaction();
         if (byteBuffer == null) {
             log.error("IndexStoreService found compaction buffer is null, timestamp: {}", indexFile.getTimestamp());
             return;
         }
+        // 写入segment buffer
         flatFile.append(byteBuffer);
+        // 调用用户segment写入外部存储
         flatFile.commit(true);
 
         TieredFileSegment fileSegment = flatFile.getFileByIndex(flatFile.getFileSegmentCount() - 1);
@@ -278,8 +287,10 @@ public class IndexStoreService extends ServiceThread implements IndexService {
 
         try {
             readWriteLock.writeLock().lock();
+            // 将上传后的segment封装为IndexFile放入内存table，用于之后的查询
             IndexFile storeFile = new IndexStoreFile(storeConfig, fileSegment);
             timeStoreTable.put(indexFile.getTimestamp(), storeFile);
+            // 删除本地indexfile（未压缩和压缩的）
             indexFile.destroy();
         } catch (Exception e) {
             log.error("IndexStoreService switch file failed, timestamp: {}, cost: {}ms",
@@ -330,8 +341,10 @@ public class IndexStoreService extends ServiceThread implements IndexService {
 
     protected IndexFile getNextSealedFile() {
         try {
+            // 最小的indexfile
             Map.Entry<Long, IndexFile> entry =
                 this.timeStoreTable.higherEntry(this.compactTimestamp.get());
+            // 存在两个indexfile
             if (entry != null && entry.getKey() < this.timeStoreTable.lastKey()) {
                 return entry.getValue();
             }
@@ -347,14 +360,17 @@ public class IndexStoreService extends ServiceThread implements IndexService {
         while (!this.isStopped()) {
             long expireTimestamp = System.currentTimeMillis()
                 - TimeUnit.HOURS.toMillis(storeConfig.getTieredStoreFileReservedTime());
+            // 1. 删除过期segment
             this.destroyExpiredFile(expireTimestamp);
-
+            // 2. 找下一个待压缩文件
             IndexFile indexFile = this.getNextSealedFile();
             if (indexFile == null) {
                 this.waitForRunning(TimeUnit.SECONDS.toMillis(10));
                 continue;
             }
+            // 3. 压缩并上传
             this.doCompactThenUploadFile(indexFile);
+            // 4. 更新已压缩上传时间戳
             this.setCompactTimestamp(indexFile.getTimestamp());
         }
         log.info(this.getServiceName() + " service shutdown");

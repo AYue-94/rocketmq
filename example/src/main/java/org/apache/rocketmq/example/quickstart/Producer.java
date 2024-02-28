@@ -30,7 +30,7 @@ public class Producer {
     /**
      * The number of produced messages.
      */
-    public static final int MESSAGE_COUNT = 1000;
+    public static final int MESSAGE_COUNT = 100;
     public static final String PRODUCER_GROUP = "please_rename_unique_group_name";
     public static final String DEFAULT_NAMESRVADDR = "127.0.0.1:9876";
     public static final String TOPIC = "TopicTest";
@@ -54,12 +54,23 @@ public class Producer {
          * </pre>
          */
         // Uncomment the following line while debugging, namesrvAddr should be set to your local address
-        // producer.setNamesrvAddr(DEFAULT_NAMESRVADDR);
+         producer.setNamesrvAddr(DEFAULT_NAMESRVADDR);
 
         /*
          * Launch the instance.
          */
         producer.start();
+
+
+
+//        for (int i = 0; i < 10; i++) {
+//            try {
+//                QueryResult result = producer.queryMessage(TOPIC, "abcdefg", 32, 0, System.currentTimeMillis());
+//                System.out.println(result.getMessageList().size());
+//            } catch (Exception e) {
+//                e.printStackTrace();
+//            }
+//        }
 
         for (int i = 0; i < MESSAGE_COUNT; i++) {
             try {
@@ -72,6 +83,7 @@ public class Producer {
                     ("Hello RocketMQ " + i).getBytes(RemotingHelper.DEFAULT_CHARSET) /* Message body */
                 );
 
+                msg.setKeys("abcdefg");
                 /*
                  * Call send message to deliver message to one of brokers.
                  */

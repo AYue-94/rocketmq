@@ -87,6 +87,7 @@ public class TieredFlatFileManager {
             synchronized (TieredFlatFileManager.class) {
                 if (indexStoreService == null) {
                     try {
+                        // broker/rmq_sys_INDEX/0
                         String filePath = TieredStoreUtil.toPath(new MessageQueue(
                             TieredStoreUtil.RMQ_SYS_TIERED_STORE_INDEX_TOPIC, storeConfig.getBrokerName(), 0));
                         indexStoreService = new IndexStoreService(new TieredFileAllocator(storeConfig), filePath);
@@ -103,7 +104,7 @@ public class TieredFlatFileManager {
     public void doCommit() {
         Random random = new Random();
         for (CompositeQueueFlatFile flatFile : deepCopyFlatFileToList()) {
-            int delay = random.nextInt(storeConfig.getMaxCommitJitter());
+            int delay = random.nextInt(storeConfig.getMaxCommitJitter()); // 100
             TieredStoreExecutor.commitExecutor.schedule(() -> {
                 try {
                     flatFile.commitCommitLog();
@@ -127,12 +128,14 @@ public class TieredFlatFileManager {
 
     public void doCleanExpiredFile() {
         long expiredTimeStamp = System.currentTimeMillis() -
-            TimeUnit.HOURS.toMillis(storeConfig.getTieredStoreFileReservedTime());
+            TimeUnit.HOURS.toMillis(storeConfig.getTieredStoreFileReservedTime()); // 72h
         for (CompositeQueueFlatFile flatFile : deepCopyFlatFileToList()) {
             TieredStoreExecutor.cleanExpiredFileExecutor.submit(() -> {
                 try {
                     flatFile.getCompositeFlatFileLock().lock();
+                    // 元数据更新为close
                     flatFile.cleanExpiredFile(expiredTimeStamp);
+                    // 真正销毁segment
                     flatFile.destroyExpiredFile();
                 } catch (Throwable t) {
                     logger.error("Do Clean expired file error, topic={}, queueId={}",

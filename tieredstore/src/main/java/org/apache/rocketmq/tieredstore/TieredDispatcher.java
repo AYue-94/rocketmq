@@ -83,7 +83,7 @@ public class TieredDispatcher extends ServiceThread implements CommitLogDispatch
 
     protected void initScheduleTask() {
         TieredStoreExecutor.commonScheduledExecutor.scheduleWithFixedDelay(() ->
-            tieredFlatFileManager.deepCopyFlatFileToList().forEach(flatFile -> {
+            tieredFlatFileManager.deepCopyFlatFileToList().forEach(flatFile/*CompositeQueueFlatFile*/ -> {
                 if (!flatFile.getCompositeFlatFileLock().isLocked()) {
                     dispatchFlatFileAsync(flatFile);
                 }
@@ -105,10 +105,12 @@ public class TieredDispatcher extends ServiceThread implements CommitLogDispatch
         }
 
         String topic = request.getTopic();
+        // topic过滤 忽略
         if (topicFilter != null && topicFilter.filterTopic(topic)) {
             return;
         }
 
+        // 获取/创建 CompositeQueueFlatFile  代表一个broker+topic+queue纬度的数据文件
         CompositeQueueFlatFile flatFile = tieredFlatFileManager.getOrCreateFlatFileIfAbsent(
             new MessageQueue(topic, brokerName, request.getQueueId()));
 
@@ -118,6 +120,7 @@ public class TieredDispatcher extends ServiceThread implements CommitLogDispatch
             return;
         }
 
+        // consumequeue和index构建过慢，直接返回
         if (detectFallBehind(flatFile)) {
             return;
         }
@@ -127,6 +130,7 @@ public class TieredDispatcher extends ServiceThread implements CommitLogDispatch
             flatFile.initOffset(request.getConsumeQueueOffset());
         }
 
+        // 二级存储consumequeue构建 追上 消息写入速度 实时写入二级存储
         if (request.getConsumeQueueOffset() == flatFile.getDispatchOffset()) {
 
             // In order to ensure the efficiency of dispatch operation and avoid high dispatch delay,
@@ -152,6 +156,7 @@ public class TieredDispatcher extends ServiceThread implements CommitLogDispatch
                 return;
             }
 
+            // 查消息
             // obtain message
             SelectMappedBufferResult message =
                 defaultStore.selectOneMessageByOffset(request.getCommitLogOffset(), request.getMsgSize());
@@ -169,8 +174,10 @@ public class TieredDispatcher extends ServiceThread implements CommitLogDispatch
                 if (request.getConsumeQueueOffset() < flatFile.getDispatchOffset()) {
                     return;
                 }
+                // 写commitlog
                 AppendResult result = flatFile.appendCommitLog(message.getByteBuffer());
                 long newCommitLogOffset = flatFile.getCommitLogMaxOffset() - message.getByteBuffer().remaining();
+                // 放入writeMap
                 doRedispatchRequestToWriteMap(result, flatFile, request.getConsumeQueueOffset(),
                     newCommitLogOffset, request.getMsgSize(), request.getTagsCode(), message.getByteBuffer());
 
@@ -297,6 +304,7 @@ public class TieredDispatcher extends ServiceThread implements CommitLogDispatch
             logger.debug("DispatchFlatFile race, topic={}, queueId={}, cq range={}-{}, dispatch offset={}-{}",
                 topic, queueId, minOffsetInQueue, maxOffsetInQueue, dispatchOffset, upperBound - 1);
 
+            // 循环offset，持续写入commitlog
             for (; dispatchOffset < upperBound; dispatchOffset++) {
                 // get consume queue
                 SelectMappedBufferResult cqItem = consumeQueue.getIndexBuffer(dispatchOffset);
@@ -463,10 +471,12 @@ public class TieredDispatcher extends ServiceThread implements CommitLogDispatch
     }
 
     protected void buildConsumeQueueAndIndexFile() {
+        // readMap writeMap切换
         swapDispatchRequestList();
         Map<MessageQueue, Long> cqMetricsMap = new HashMap<>();
         Map<MessageQueue, Long> ifMetricsMap = new HashMap<>();
 
+        // 遍历所有FlatFile下的DispatchRequest
         for (Map.Entry<CompositeQueueFlatFile, List<DispatchRequest>> entry : dispatchRequestReadMap.entrySet()) {
             CompositeQueueFlatFile flatFile = entry.getKey();
             List<DispatchRequest> requestList = entry.getValue();
@@ -499,7 +509,7 @@ public class TieredDispatcher extends ServiceThread implements CommitLogDispatch
                     cqMetricsMap.put(messageQueue, cqCount + 1);
 
                     // build index
-                    if (storeConfig.isMessageIndexEnable()) {
+                    if (storeConfig.isMessageIndexEnable()) { // true
                         result = flatFile.appendIndexFile(request);
                         if (AppendResult.SUCCESS.equals(result)) {
                             long ifCount = ifMetricsMap.computeIfAbsent(messageQueue, key -> 0L);
@@ -577,6 +587,7 @@ public class TieredDispatcher extends ServiceThread implements CommitLogDispatch
             TieredStoreMetricsManager.messagesDispatchTotal.add(count, attributes);
         });
 
+        // readMap剩余request重新放入writeMap
         copySurvivorObject();
     }
 

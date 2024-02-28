@@ -21,7 +21,9 @@ import org.apache.rocketmq.tieredstore.file.CompositeFlatFile;
 
 public class MessageCacheKey {
 
+    // broker/topic/queueId
     private final CompositeFlatFile flatFile;
+    // offset
     private final long offset;
 
     public MessageCacheKey(CompositeFlatFile flatFile, long offset) {

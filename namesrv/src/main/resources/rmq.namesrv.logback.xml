@@ -87,31 +87,31 @@
         </encoder>
     </appender>
 
-    <logger name="RocketmqNamesrv" additivity="false" level="INFO">
-        <appender-ref ref="RocketmqNamesrvAppender"/>
-    </logger>
+<!--    <logger name="RocketmqNamesrv" additivity="false" level="INFO">-->
+<!--        <appender-ref ref="RocketmqNamesrvAppender"/>-->
+<!--    </logger>-->
 
-    <logger name="RocketmqCommon" additivity="false" level="INFO">
-        <appender-ref ref="RocketmqNamesrvAppender"/>
-    </logger>
+<!--    <logger name="RocketmqCommon" additivity="false" level="INFO">-->
+<!--        <appender-ref ref="RocketmqNamesrvAppender"/>-->
+<!--    </logger>-->
 
-    <logger name="RocketmqRemoting" additivity="false" level="INFO">
-        <appender-ref ref="RocketmqNamesrvAppender"/>
-    </logger>
+<!--    <logger name="RocketmqRemoting" additivity="false" level="INFO">-->
+<!--        <appender-ref ref="RocketmqNamesrvAppender"/>-->
+<!--    </logger>-->
 
-    <logger name="RocketmqNamesrvConsole" additivity="false" level="INFO">
-        <appender-ref ref="STDOUT"/>
-    </logger>
+<!--    <logger name="RocketmqNamesrvConsole" additivity="false" level="INFO">-->
+<!--        <appender-ref ref="STDOUT"/>-->
+<!--    </logger>-->
 
-    <logger name="RocketmqController" additivity="false" level="INFO">
-        <appender-ref ref="RocketmqNamesrvAppender"/>
-    </logger>
+<!--    <logger name="RocketmqController" additivity="false" level="INFO">-->
+<!--        <appender-ref ref="RocketmqNamesrvAppender"/>-->
+<!--    </logger>-->
 
-    <logger name="RocketmqTraffic" additivity="false" level="INFO">
-        <appender-ref ref="RocketmqTrafficAppender" />
-    </logger>
+<!--    <logger name="RocketmqTraffic" additivity="false" level="INFO">-->
+<!--        <appender-ref ref="RocketmqTrafficAppender" />-->
+<!--    </logger>-->
 
     <root level="INFO">
-        <appender-ref ref="DefaultAppender"/>
+        <appender-ref ref="STDOUT"/>
     </root>
 </configuration>

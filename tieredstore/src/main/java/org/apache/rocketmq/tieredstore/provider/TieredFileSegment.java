@@ -43,29 +43,39 @@ public abstract class TieredFileSegment implements Comparable<TieredFileSegment>
 
     private static final Logger logger = LoggerFactory.getLogger(TieredStoreUtil.TIERED_STORE_LOGGER_NAME);
 
+    // 文件路径 broker/topic/queue
     protected final String filePath;
+    // 当前segement的起始offset
     protected final long baseOffset;
+    // commitlog/consumequeue/index
     protected final FileSegmentType fileType;
     protected final TieredMessageStoreConfig storeConfig;
-
+    // segement最大容量
     private final long maxSize;
     private final ReentrantLock bufferLock = new ReentrantLock();
     private final Semaphore commitLock = new Semaphore(1);
-
+    // segement是否写满
     private volatile boolean full = false;
     private volatile boolean closed = false;
 
+    // segement中最小的存储时间
     private volatile long minTimestamp = Long.MAX_VALUE;
+    // segement中最大的存储时间
     private volatile long maxTimestamp = Long.MAX_VALUE;
+    // 刷盘进度
     private volatile long commitPosition = 0L;
+    // append进度
     private volatile long appendPosition = 0L;
 
     // only used in commitLog
+    // commitlog写入物理offset对应逻辑offset
     private volatile long dispatchCommitOffset = 0L;
-
+    // 用于commitlog，标识一个segement的结束
     private ByteBuffer codaBuffer;
+    // 待刷盘buffer
     private List<ByteBuffer> bufferList = new ArrayList<>();
     private FileSegmentInputStream fileSegmentInputStream;
+    // 刷盘future
     private CompletableFuture<Boolean> flightCommitRequest = CompletableFuture.completedFuture(false);
 
     public TieredFileSegment(TieredMessageStoreConfig storeConfig,
@@ -210,22 +220,26 @@ public abstract class TieredFileSegment implements Comparable<TieredFileSegment>
                 return AppendResult.SUCCESS;
             }
 
+            // 文件满了，设置full=true，返回FILE_FULL
             if (appendPosition + byteBuf.remaining() > maxSize) {
                 setFull();
                 return AppendResult.FILE_FULL;
             }
 
-            if (bufferList.size() > storeConfig.getTieredStoreGroupCommitCount()
-                || appendPosition - commitPosition > storeConfig.getTieredStoreGroupCommitSize()) {
+            // 到达批量刷盘阈值，异步刷盘
+            if (bufferList.size() > storeConfig.getTieredStoreGroupCommitCount() // 2500
+                || appendPosition - commitPosition > storeConfig.getTieredStoreGroupCommitSize()) { // 32MB
                 commitAsync();
             }
 
+            // 如果buffer长度超过1w，不可append
             if (bufferList.size() > storeConfig.getTieredStoreMaxGroupCommitCount()) {
                 logger.debug("File segment append buffer full, file: {}, buffer size: {}, pending bytes: {}",
                     getPath(), bufferList.size(), appendPosition - commitPosition);
                 return AppendResult.BUFFER_FULL;
             }
 
+            // 存储时间戳更新
             if (timestamp != Long.MAX_VALUE) {
                 maxTimestamp = timestamp;
                 if (minTimestamp == Long.MAX_VALUE) {
@@ -233,8 +247,10 @@ public abstract class TieredFileSegment implements Comparable<TieredFileSegment>
                 }
             }
 
+            // append进度更新
             appendPosition += byteBuf.remaining();
 
+            // buffer复制，加入bufferList
             // deep copy buffer
             ByteBuffer byteBuffer = ByteBuffer.allocateDirect(byteBuf.remaining());
             byteBuffer.put(byteBuf);
@@ -364,6 +380,7 @@ public abstract class TieredFileSegment implements Comparable<TieredFileSegment>
         }
 
         try {
+            // 异常情况处理
             if (fileSegmentInputStream != null) {
                 long fileSize = this.getSize();
                 if (fileSize == -1L) {
@@ -381,8 +398,10 @@ public abstract class TieredFileSegment implements Comparable<TieredFileSegment>
 
             int bufferSize;
             if (fileSegmentInputStream != null) {
+                // 异常情况处理
                 bufferSize = fileSegmentInputStream.available();
             } else {
+                // 获取bufferList
                 List<ByteBuffer> bufferList = borrowBuffer();
                 bufferSize = bufferList.stream().mapToInt(ByteBuffer::remaining).sum()
                     + (codaBuffer != null ? codaBuffer.remaining() : 0);
@@ -390,23 +409,29 @@ public abstract class TieredFileSegment implements Comparable<TieredFileSegment>
                     releaseCommitLock();
                     return CompletableFuture.completedFuture(true);
                 }
+                // 屏蔽bufferList，构造InputStream
                 fileSegmentInputStream = FileSegmentInputStreamFactory.build(
                     fileType, baseOffset + commitPosition, bufferList, codaBuffer, bufferSize);
             }
 
             return flightCommitRequest = this
+                // 调用用户实现commit0
                 .commit0(fileSegmentInputStream, commitPosition, bufferSize, fileType != FileSegmentType.INDEX)
                 .thenApply(result -> {
                     if (result) {
+                        // 如果是commitlog，更新dispatchCommitOffset
                         updateDispatchCommitOffset(fileSegmentInputStream.getBufferList());
+                        // 更新commit位点
                         commitPosition += bufferSize;
                         fileSegmentInputStream = null;
                         return true;
                     } else {
+                        // 所有position回滚到0
                         fileSegmentInputStream.rewind();
                         return false;
                     }
                 })
+                // 异常处理
                 .exceptionally(this::handleCommitException)
                 .whenComplete((result, e) -> releaseCommitLock());
 
@@ -430,8 +455,11 @@ public abstract class TieredFileSegment implements Comparable<TieredFileSegment>
     private boolean handleCommitException(Throwable e) {
         // Get root cause here
         Throwable cause = e.getCause() != null ? e.getCause() : e;
+
+        // 1. 调用segment用户实现getFileSize，获取实际文件长度
         long fileSize = this.getCorrectFileSize(cause);
 
+        // 2. 如果返回-1，回滚InputStream
         if (fileSize == -1L) {
             logger.error("Get commit position error, Commit: %d, Expect: %d, Current Max: %d, FileName: %s",
                 commitPosition, commitPosition + fileSegmentInputStream.getContentLength(), appendPosition, getPath());
@@ -439,6 +467,7 @@ public abstract class TieredFileSegment implements Comparable<TieredFileSegment>
             return false;
         }
 
+        // 3. 根据文件大小，修复刷盘进度，决定是否回滚InputStream
         if (correctPosition(fileSize, cause)) {
             updateDispatchCommitOffset(fileSegmentInputStream.getBufferList());
             fileSegmentInputStream = null;
