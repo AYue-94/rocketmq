@@ -3,7 +3,9 @@ package org.apache.rocketmq.tieredstore.provider.aliyun;
 import com.aliyun.oss.OSS;
 import com.aliyun.oss.OSSClientBuilder;
 import com.aliyun.oss.OSSException;
+import com.aliyun.oss.common.utils.IOUtils;
 import com.aliyun.oss.model.AppendObjectRequest;
+import com.aliyun.oss.model.AppendObjectResult;
 import com.aliyun.oss.model.GetObjectRequest;
 import com.aliyun.oss.model.OSSObject;
 import com.aliyun.oss.model.ObjectMetadata;
@@ -23,6 +25,8 @@ import org.apache.rocketmq.tieredstore.provider.stream.FileSegmentInputStream;
 import org.apache.rocketmq.tieredstore.util.TieredStoreUtil;
 
 public class AliyunFileSegment extends TieredFileSegment {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(TieredStoreUtil.TIERED_STORE_LOGGER_NAME);
 
     private final Client client;
 
@@ -47,33 +51,44 @@ public class AliyunFileSegment extends TieredFileSegment {
 
     @Override
     public long getSize() {
-        return client.getMetadata(this.fullPath).getContentLength();
-    }
-
-    @Override
-    public boolean exists() {
-        return client.exist(this.fullPath);
-    }
-
-    @Override
-    public void createFile() {
-        if (created == null) {
-            synchronized (this) {
-                if (created == null) {
-                    if (exists()) {
-                        created = true;
-                        return;
-                    }
-                    client.create(this.fullPath);
-                    created = true;
-                }
-            }
+        try {
+            ObjectMetadata metadata = client.getMetadata(this.fullPath);
+            return metadata.getContentLength();
+        } catch (Exception e) {
+            LOGGER.info("[aliyun] getSize error : {}", e.getMessage());
+            return 0;
         }
     }
 
     @Override
+    public boolean exists() {
+//        return client.exist(this.fullPath);
+        return true;
+    }
+
+    @Override
+    public void createFile() {
+//        if (created == null) {
+//            synchronized (this) {
+//                if (created == null) {
+//                    if (exists()) {
+//                        created = true;
+//                        return;
+//                    }
+//                    client.create(this.fullPath);
+//                    created = true;
+//                }
+//            }
+//        }
+    }
+
+    @Override
     public void destroyFile() {
-        client.delete(this.fullPath);
+        try {
+            client.delete(this.fullPath);
+        } catch (Exception e) {
+
+        }
     }
 
     @Override
@@ -127,12 +142,12 @@ public class AliyunFileSegment extends TieredFileSegment {
             }
         }
 
-        private void append(String path, long position, InputStream inputStream) {
+        private void append(String path, long position, InputStream inputStream) throws IOException {
             LOGGER.info("[aliyun] append path = {} position = {}", path, position);
             AppendObjectRequest appendObjectRequest = new AppendObjectRequest(bucket, path, inputStream);
             appendObjectRequest.setPosition(position);
-            oss.appendObject(appendObjectRequest);
-            LOGGER.info("[aliyun] append path = {} position = {} ok", path, position);
+            AppendObjectResult result = oss.appendObject(appendObjectRequest);
+            LOGGER.info("[aliyun] append path = {} position = {} next_position = {}", path, position, result.getNextPosition());
         }
 
         public void delete(String path) {
@@ -143,6 +158,8 @@ public class AliyunFileSegment extends TieredFileSegment {
             ByteArrayInputStream inputStream = new ByteArrayInputStream(new byte[0]);
             try {
                 append(path, 0, inputStream);
+            } catch (IOException e) {
+                throw new RuntimeException(e);
             } finally {
                 try {
                     inputStream.close();
@@ -153,28 +170,80 @@ public class AliyunFileSegment extends TieredFileSegment {
         }
 
         public CompletableFuture<Void> appendAsync(String path, long position, InputStream stream) {
-            return CompletableFuture.runAsync(() -> this.append(path, position, stream), this.asyncExecutor);
+//            CompletableFuture<Void> future = new CompletableFuture<>();
+//            try {
+//                this.append(path, position, stream);
+//                future.complete(null);
+//            } catch (IOException e) {
+//                future.completeExceptionally(e);
+//            }
+//            return future;
+            return CompletableFuture.runAsync(() -> {
+                try {
+                    this.append(path, position, stream);
+                } catch (IOException e) {
+                    throw new RuntimeException(e);
+                }
+            }, this.asyncExecutor);
         }
 
         public CompletableFuture<ByteBuffer> getAsync(String path, long position, int length) {
+//            CompletableFuture<ByteBuffer> future = new CompletableFuture<>();
+//
+//            LOGGER.info("[aliyun] get path = {} position = {} length = {}", path, position, length);
+//            GetObjectRequest getObjectRequest = new GetObjectRequest(bucket, path);
+//            getObjectRequest.setRange(position, position + length - 1);
+//            OSSObject object = oss.getObject(getObjectRequest);
+//            LOGGER.info("[aliyun] get path = {} position = {} length = {} response = {}", path, position, length, object);
+//            try {
+//                byte[] byteArray = IOUtils.readStreamAsByteArray(object.getObjectContent());
+//                ByteBuffer byteBuffer = ByteBuffer.allocate(length);
+//                byteBuffer.put(byteArray);
+//                byteBuffer.flip();
+//                byteBuffer.limit(length);
+//                LOGGER.info("[aliyun] get path = {} position = {} length = {} response.buffer = {}", path, position, length, byteBuffer.toString());
+//                future.complete(byteBuffer);
+//            } catch (Exception e) {
+//                future.completeExceptionally(e);
+//            } finally {
+//                try {
+//                    object.close();
+//                } catch (IOException ignore) {}
+//            }
+//            return future;
             return CompletableFuture.supplyAsync(() -> {
-                LOGGER.info("[aliyun] get path = {} position = {} length = {}", path, position, length);
-                GetObjectRequest getObjectRequest = new GetObjectRequest(bucket, path);
-                getObjectRequest.setRange(position, position + length);
-                OSSObject object = oss.getObject(getObjectRequest);
-                LOGGER.info("[aliyun] get path = {} position = {} length = {} response = {}", path, position, length, object);
                 try {
-                    byte[] bytes = new byte[object.getObjectContent().available()];
-                    int read = object.getObjectContent().read(bytes);
-                    return ByteBuffer.wrap(bytes);
+                    return this.getSync(path, position, length);
                 } catch (IOException e) {
                     throw new RuntimeException(e);
-                } finally {
-                    try {
-                        object.close();
-                    } catch (IOException ignore) {}
                 }
             }, asyncExecutor);
+        }
+
+        private ByteBuffer getSync(String path, long position, int length) throws IOException {
+            OSSObject object = null;
+            try {
+                LOGGER.info("[aliyun] get path = {} position = {} length = {}", path, position, length);
+                GetObjectRequest getObjectRequest = new GetObjectRequest(bucket, path);
+                getObjectRequest.setRange(position, position + length - 1);
+                object = oss.getObject(getObjectRequest);
+                LOGGER.info("[aliyun] get path = {} position = {} length = {} response = {}", path, position, length, object);
+                byte[] byteArray = IOUtils.readStreamAsByteArray(object.getObjectContent());
+                ByteBuffer byteBuffer = ByteBuffer.allocate(length);
+                byteBuffer.put(byteArray);
+                byteBuffer.flip();
+                byteBuffer.limit(length);
+                LOGGER.info("[aliyun] get path = {} position = {} length = {} response.buffer = {}", path, position, length, byteBuffer.toString());
+                return byteBuffer;
+            } finally {
+                if (object != null) {
+                    try {
+                        object.close();
+                    } catch (Exception ignore) {
+
+                    }
+                }
+            }
         }
 
         public ObjectMetadata getMetadata(String path) {

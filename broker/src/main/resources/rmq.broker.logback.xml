@@ -607,9 +607,9 @@
 <!--        <appender-ref ref="RocketmqProtectionSiftingAppender"/>-->
 <!--    </logger>-->
 
-<!--    <logger name="RocketmqWaterMark" additivity="false" level="INFO">-->
+    <logger name="RocketmqWaterMark" additivity="false" level="ERROR">
 <!--        <appender-ref ref="RocketmqWaterMarkSiftingAppender"/>-->
-<!--    </logger>-->
+    </logger>
 
 <!--    <logger name="RocketmqCommon" additivity="false" level="INFO">-->
 <!--        <appender-ref ref="RocketmqBrokerSiftingAppender"/>-->
